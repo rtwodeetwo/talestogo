@@ -132,14 +132,17 @@ class ResponseCollector:
     def save_response(self, query_id: str, query_text: str, platform: str,
                      response_text: str) -> models.Response:
         """Save a response to the database."""
+        # Sanitize for PostgreSQL: strip null bytes and invalid surrogates
+        clean_text = response_text.replace("\x00", "").encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace") if response_text else response_text
+
         response = models.Response(
             user_id=self.user_id,
-            brand_id=self.brand_id,  # Associate response with brand
-            batch_id=self.batch_id,  # Associate response with batch
+            brand_id=self.brand_id,
+            batch_id=self.batch_id,
             query_id=query_id,
             query_text=query_text,
             platform=platform,
-            response_text=response_text,
+            response_text=clean_text,
             timestamp=datetime.utcnow()
         )
         self.db.add(response)

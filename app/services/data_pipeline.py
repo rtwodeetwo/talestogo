@@ -558,14 +558,16 @@ def run_collection_analysis_report(
                 return
 
             if process.returncode != 0:
-                # Collection failed
+                # Collection failed — the script may have already written
+                # error details to the task record via _mark_task_failed().
+                # Only overwrite if it didn't.
                 task = db_thread.query(models.TaskStatus).filter_by(id=task_id).first()
                 if task:
-                    task.status = "failed"
-                    error_preview = stderr[-500:] if stderr else 'Unknown error'
-                    task.error_message = f"Collection script failed with exit code {process.returncode}: {error_preview}"
-                    task.completed_at = utcnow()
-                    db_thread.commit()
+                    if task.status != "failed" or not task.error_message:
+                        task.status = "failed"
+                        task.error_message = f"Collection script failed with exit code {process.returncode}:\n\nstderr:\n{stderr or 'N/A'}\n\nstdout:\n{stdout or 'N/A'}"
+                        task.completed_at = utcnow()
+                        db_thread.commit()
 
                 # Send failure email
                 from app.services.email_notifications import send_task_completion_email
@@ -680,8 +682,7 @@ def run_collection_analysis_report(
                 task = db_thread.query(models.TaskStatus).filter_by(id=analysis_task.id).first()
                 if task:
                     task.status = "failed"
-                    error_preview = stderr[-500:] if stderr else 'Unknown error'
-                    task.error_message = f"Analysis script failed with exit code {analysis_process.returncode}: {error_preview}"
+                    task.error_message = f"Analysis script failed with exit code {analysis_process.returncode}:\n\nstderr:\n{stderr or 'N/A'}\n\nstdout:\n{stdout or 'N/A'}"
                     task.completed_at = utcnow()
                     db_thread.commit()
 
