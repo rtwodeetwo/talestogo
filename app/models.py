@@ -77,7 +77,7 @@ class Response(Base):
     # No Foreign Key constraint, just index for faster lookups by query_id
     query_id = Column(String(10), index=True, nullable=False)
     query_text = Column(Text) # Denormalized
-    platform = Column(String(20), index=True, nullable=False) # ChatGPT, Claude, Gemini
+    platform = Column(String(100), index=True, nullable=False)
     response_text = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow, index=True)
     # Analysis fields

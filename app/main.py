@@ -106,6 +106,9 @@ if "llm_providers" in _inspector.get_table_names():
     if "bing_connection_name" not in _existing_cols:
         with engine.begin() as _conn:
             _conn.execute(text("ALTER TABLE llm_providers ADD COLUMN bing_connection_name VARCHAR(200)"))
+if "responses" in _inspector.get_table_names() and engine.dialect.name == "postgresql":
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE responses ALTER COLUMN platform TYPE VARCHAR(100)"))
 del _inspector
 
 # --- Lifespan (startup / shutdown) ---
