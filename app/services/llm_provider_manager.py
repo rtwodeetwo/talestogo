@@ -24,9 +24,10 @@ API_TYPE_TO_ENV_VAR = {
     "openai_compatible": "PERPLEXITY_API_KEY",
     # Bing-backed web search (additive, used only for the State of the LLMs
     # report section). bing_v7 pairs with the configured analysis provider;
-    # bing_grounded uses Azure AI Foundry's agent-with-grounding tool.
+    # azure_foundry_agents uses Azure AI Foundry Prompt Agents with Bing Grounding.
     "bing_v7": "BING_SEARCH_V7_API_KEY",
-    "bing_grounded": "AZURE_FOUNDRY_API_KEY",
+    "azure_foundry_agents": "AZURE_AI_PROJECT_ENDPOINT",
+    "bing_grounded": "AZURE_AI_PROJECT_ENDPOINT",  # backward compat alias
 }
 
 
@@ -46,6 +47,7 @@ class ProviderConfig:
     api_endpoint: Optional[str] = None
     env_var_name: Optional[str] = None  # Custom env var for non-default providers
     api_version: Optional[str] = None  # Azure OpenAI api_version (e.g., "2024-10-21")
+    bing_connection_name: Optional[str] = None  # Foundry project connection name for Bing Grounding
     color: str = "#666666"
     sort_order: int = 0
     is_enabled: bool = True
@@ -65,13 +67,19 @@ class ProviderConfig:
         return os.getenv(env_var, "") if env_var else ""
 
     def has_api_key(self) -> bool:
-        """Check if the API key is configured in environment."""
+        """Check if the API key is configured in environment.
+
+        For azure_foundry_agents/bing_grounded, auth is via DefaultAzureCredential
+        so we check for a configured endpoint instead of an API key.
+        """
+        if self.api_type in ("azure_foundry_agents", "bing_grounded"):
+            return bool(self.api_endpoint)
         return bool(self._get_api_key())
 
     def call(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.7) -> str:
         """Call this provider with a prompt."""
         api_key = self._get_api_key()
-        if not api_key:
+        if not api_key and self.api_type not in ("azure_foundry_agents", "bing_grounded"):
             env_var = self.env_var_name or API_TYPE_TO_ENV_VAR.get(self.api_type, "UNKNOWN")
             raise LLMConfigurationError(f"API key not found in environment variable: {env_var}")
 
@@ -83,7 +91,8 @@ class ProviderConfig:
             api_endpoint=self.api_endpoint,
             api_version=self.api_version,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
+            bing_connection_name=self.bing_connection_name,
         )
 
     def call_with_web_search(
@@ -99,7 +108,7 @@ class ProviderConfig:
         api_types ignore the parameter.
         """
         api_key = self._get_api_key()
-        if not api_key:
+        if not api_key and self.api_type not in ("azure_foundry_agents", "bing_grounded"):
             env_var = self.env_var_name or API_TYPE_TO_ENV_VAR.get(self.api_type, "UNKNOWN")
             raise LLMConfigurationError(f"API key not found in environment variable: {env_var}")
 
@@ -111,6 +120,7 @@ class ProviderConfig:
             api_endpoint=self.api_endpoint,
             api_version=self.api_version,
             analysis_provider=analysis_provider,
+            bing_connection_name=self.bing_connection_name,
         )
 
 
@@ -233,6 +243,7 @@ class LLMProviderManager:
                     api_endpoint=p.api_endpoint,
                     env_var_name=p.env_var_name,
                     api_version=p.api_version,
+                    bing_connection_name=getattr(p, "bing_connection_name", None),
                     color=p.color or "#666666",
                     sort_order=p.sort_order or 0,
                     is_enabled=p.is_enabled,

@@ -7,19 +7,14 @@ version = "0.1.0"
 # additional providers in Admin → LLM Providers; the rest of the app runs
 # fine without them.
 [project.optional-dependencies]
-# Azure AI Foundry "Grounding with Bing Search" — adds the bing_grounded
-# api_type so an Azure-only deployment can populate the State of the LLMs
-# report section without bringing in Gemini or Perplexity.
+# Azure AI Foundry Agents — adds the azure_foundry_agents api_type so an
+# Azure-only deployment can populate the State of the LLMs report section
+# without bringing in Gemini or Perplexity. Uses Foundry Prompt Agents
+# invoked via the OpenAI Responses API with Grounding-with-Bing-Search.
 #
-# Install: pip install .[bing-grounded]
-#
-# The exact SDK surface for grounding-with-bing is evolving; pin to a
-# minimum version and adjust based on operator feedback. Without this
-# extra, attempting to configure a bing_grounded provider returns a
-# clear "install the bing-grounded extra" error rather than ImportError.
-bing-grounded = [
-    "azure-ai-projects>=1.0.0b1",
-    "azure-ai-agents>=1.0.0b1",
+# Install: pip install .[azure-foundry]
+azure-foundry = [
+    "azure-ai-projects>=2.2.0",
     "azure-identity>=1.15.0",
 ]
 

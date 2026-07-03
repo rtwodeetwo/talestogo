@@ -97,6 +97,20 @@ from app.routers import (
 # It's convenient for development. For production, you'd use a migration tool.
 models.Base.metadata.create_all(bind=engine)
 
+# Auto-add columns that were added after initial table creation.
+# create_all() won't ALTER existing tables — only creates missing ones.
+from sqlalchemy import inspect, text
+_inspector = inspect(engine)
+if "llm_providers" in _inspector.get_table_names():
+    _existing_cols = {c["name"] for c in _inspector.get_columns("llm_providers")}
+    if "bing_connection_name" not in _existing_cols:
+        with engine.begin() as _conn:
+            _conn.execute(text("ALTER TABLE llm_providers ADD COLUMN bing_connection_name VARCHAR(200)"))
+if "responses" in _inspector.get_table_names() and engine.dialect.name == "postgresql":
+    with engine.begin() as _conn:
+        _conn.execute(text("ALTER TABLE responses ALTER COLUMN platform TYPE VARCHAR(100)"))
+del _inspector
+
 # --- Lifespan (startup / shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):

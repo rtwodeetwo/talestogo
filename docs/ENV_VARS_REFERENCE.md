@@ -144,7 +144,11 @@ Tales is LLM-provider-agnostic. Configure at least one provider; the one you fla
 | `PERPLEXITY_API_KEY` | Perplexity (supports web search) | https://www.perplexity.ai/settings/api |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI (resource URL, api_version, deployment name configured in the UI) | Azure Portal → your OpenAI resource → Keys |
 | `BING_SEARCH_V7_API_KEY` | Bing Search v7 (web search retrieval; pairs with the analysis provider). Optional — only needed for the State of the LLMs section in an Azure/OpenAI-only deployment. | Azure Portal → Bing Search v7 resource → Keys |
-| `AZURE_FOUNDRY_API_KEY` | Azure AI Foundry "Grounding with Bing Search" (single-vendor Azure web search). Optional; requires `pip install talestogo[bing-grounded]` server-side. | Azure AI Foundry project credentials |
+| `AZURE_AI_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint for the `azure_foundry_agents` api_type. Auth is via `DefaultAzureCredential` — no API key needed. Optional; requires `pip install talestogo[azure-foundry]` server-side. | `https://foundry-xyz.services.ai.azure.com/api/projects/tales` |
+| `AZURE_AI_BING_CONNECTION_NAME` | Foundry project connection name for Grounding with Bing Search. Used by `azure_foundry_agents` if not configured per-provider in the Admin UI. | `bing-grounding` |
+| `AZURE_CLIENT_ID` | (Optional) Client ID for user-assigned managed identity or service principal auth. Standard Azure Identity env var read by `DefaultAzureCredential`. | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_TENANT_ID` | (Optional, service principal only) Azure AD tenant ID. | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `AZURE_CLIENT_SECRET` | (Optional, service principal only) Azure AD client secret. | (secret string) |
 
 At least one provider env var must be set. The provider is then enabled and configured in **Admin → LLM Providers** in the UI.
 
@@ -162,7 +166,7 @@ On a fresh install with no provider records in the database, Tales auto-discover
 
 **Azure-only deployment:** Set `AZURE_OPENAI_API_KEY` in env, then in the UI add a new provider with api_type=Azure OpenAI, your Azure resource URL (e.g., `https://my-resource.openai.azure.com/`), api_version (e.g., `2024-10-21`), and deployment name. Mark `use_for_analysis=True`. By default the "State of the LLMs" report section will be omitted.
 
-**Azure-only + State of the LLMs:** add `BING_SEARCH_V7_API_KEY` (and configure a Bing Search v7 provider in the UI), or for a fully Azure-native story add `AZURE_FOUNDRY_API_KEY` (requires `pip install talestogo[bing-grounded]` and configuring a Bing Grounding provider). See `IT_DEPLOYMENT_GUIDE.md` for the full recipe.
+**Azure-only + State of the LLMs:** add `BING_SEARCH_V7_API_KEY` (and configure a Bing Search v7 provider in the UI), or for a fully Azure-native story set `AZURE_AI_PROJECT_ENDPOINT` + `AZURE_AI_BING_CONNECTION_NAME` (requires `pip install talestogo[azure-foundry]` and configuring an Azure AI Foundry Agents provider). See `IT_DEPLOYMENT_GUIDE.md` for the full recipe.
 
 **Key Formats:**
 - OpenAI: `sk-proj-...` or `sk-...`
@@ -335,6 +339,13 @@ Generate a secure key: `python3 -c "import secrets; print(secrets.token_urlsafe(
 - Verify the key is copied correctly (no extra spaces)
 - Check that billing/credits are set up with the provider
 - Ensure the key has the necessary permissions
+
+### "Azure AI Foundry Agents (azure_foundry_agents) connection error"
+- This provider uses `DefaultAzureCredential` — no API key env var required
+- Ensure `az login` has been run (local dev) or managed identity is configured (production)
+- Verify the `AZURE_AI_PROJECT_ENDPOINT` and `AZURE_AI_BING_CONNECTION_NAME` are set (or configured per-provider in the Admin UI)
+- Verify the Bing Search connection exists in your Foundry project (AI Foundry → Project → Connections tab)
+- Requires `pip install talestogo[azure-foundry]` (installs `azure-ai-projects` + `azure-identity`)
 
 ### "CORS error"
 - Add your frontend URL to FRONTEND_URL

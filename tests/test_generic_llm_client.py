@@ -313,245 +313,365 @@ class TestBingV7Required:
             )
 
 
-# ==================== Azure AI Foundry — Bing Grounded ====================
+# ==================== Azure AI Foundry Agents ====================
 
-class TestBingGroundedSDKGuard:
-    def test_bing_grounded_raises_clear_error_when_sdk_missing(self, monkeypatch):
-        """If the bing-grounded extra isn't installed, the user gets a clear
+class TestAzureFoundryAgentsSDKGuard:
+    def test_raises_clear_error_when_sdk_missing(self, monkeypatch):
+        """If the azure-foundry extra isn't installed, the user gets a clear
         message instead of an ImportError."""
         import app.services.generic_llm_client as glc
         monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", False)
-        with pytest.raises(LLMConfigurationError, match="bing-grounded"):
+        with pytest.raises(LLMConfigurationError, match="azure-foundry"):
+            GenericLLMClient.call_with_web_search(
+                api_type="azure_foundry_agents",
+                api_key="k",
+                model_name="gpt-4o",
+                prompt="Q?",
+                api_endpoint="https://my-foundry.example/",
+                bing_connection_name="bing-grounding",
+            )
+
+    def test_backward_compat_bing_grounded_also_raises(self, monkeypatch):
+        """The legacy 'bing_grounded' alias routes to the same implementation."""
+        import app.services.generic_llm_client as glc
+        monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", False)
+        with pytest.raises(LLMConfigurationError, match="azure-foundry"):
             GenericLLMClient.call_with_web_search(
                 api_type="bing_grounded",
                 api_key="k",
-                model_name="agent-id",
+                model_name="gpt-4o",
                 prompt="Q?",
                 api_endpoint="https://my-foundry.example/",
-                api_version="2025-05-15-preview",
+                bing_connection_name="bing-grounding",
             )
 
-    def test_bing_grounded_requires_endpoint(self, monkeypatch):
-        # Even with the SDK present, no endpoint must fail with a clear error.
+    def test_requires_endpoint(self, monkeypatch):
         import app.services.generic_llm_client as glc
         monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
         with pytest.raises(LLMConfigurationError, match="api_endpoint"):
             GenericLLMClient.call_with_web_search(
-                api_type="bing_grounded",
+                api_type="azure_foundry_agents",
                 api_key="k",
-                model_name="agent-id",
+                model_name="gpt-4o",
                 prompt="Q?",
+                bing_connection_name="bing-grounding",
             )
 
-
-class TestBingGroundedAuth:
-    """Bing Grounded supports two auth paths:
-    - AzureKeyCredential when AZURE_FOUNDRY_API_KEY is set (key-based)
-    - DefaultAzureCredential when no key (managed identity / az-login / SP env vars)
-    """
-
-    def _setup_sdk_mocks(self, monkeypatch):
-        """Patch AIProjectClient, credentials, and the SDK-available flag.
-        Returns (mock_project_client_cls, mock_key_cred_cls, mock_default_cred_cls).
-        """
+    def test_requires_bing_connection_name(self, monkeypatch):
         import app.services.generic_llm_client as glc
         monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
-
-        mock_project_cls = MagicMock()
-        mock_key_cred_cls = MagicMock()
-        mock_default_cred_cls = MagicMock()
-
-        monkeypatch.setattr(glc, "AIProjectClient", mock_project_cls, raising=False)
-        monkeypatch.setattr(glc, "AzureKeyCredential", mock_key_cred_cls, raising=False)
-        monkeypatch.setattr(glc, "DefaultAzureCredential", mock_default_cred_cls, raising=False)
-
-        # Make the inner agent flow return a successful run with one assistant message.
-        client = MagicMock()
-        mock_project_cls.return_value = client
-        # The `with client:` context manager hands back the client itself.
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-
-        thread = MagicMock(id="thread-1")
-        client.agents.threads.create.return_value = thread
-
-        run = MagicMock()
-        run.status = "completed"
-        client.agents.runs.create_and_process.return_value = run
-
-        msg = MagicMock()
-        msg.role = "assistant"
-        msg.content = "agent response"
-        client.agents.messages.list.return_value = [msg]
-
-        return mock_project_cls, mock_key_cred_cls, mock_default_cred_cls
-
-    def test_uses_azure_key_credential_when_api_key_set(self, monkeypatch):
-        project_cls, key_cred_cls, default_cred_cls = self._setup_sdk_mocks(monkeypatch)
-
-        GenericLLMClient.call_with_web_search(
-            api_type="bing_grounded",
-            api_key="secret-key",
-            model_name="agent-id",
-            prompt="Q?",
-            api_endpoint="https://my-foundry.example/",
-            api_version="2025-05-15-preview",
-        )
-
-        # AzureKeyCredential should be constructed with our key, and
-        # DefaultAzureCredential should NOT be touched.
-        key_cred_cls.assert_called_once_with("secret-key")
-        default_cred_cls.assert_not_called()
-
-    def test_falls_back_to_default_credential_when_no_key(self, monkeypatch):
-        project_cls, key_cred_cls, default_cred_cls = self._setup_sdk_mocks(monkeypatch)
-
-        GenericLLMClient.call_with_web_search(
-            api_type="bing_grounded",
-            api_key="",  # empty key → managed-identity path
-            model_name="agent-id",
-            prompt="Q?",
-            api_endpoint="https://my-foundry.example/",
-            api_version="2025-05-15-preview",
-        )
-
-        default_cred_cls.assert_called_once_with()
-        key_cred_cls.assert_not_called()
-
-
-class TestBingGroundedRunStatus:
-    """Bing Grounded must verify the agent run actually completed — not just
-    that it didn't fail. cancelled / expired / requires_action runs would
-    return empty or stale messages."""
-
-    @pytest.mark.parametrize("status", ["cancelled", "expired", "requires_action", None])
-    def test_non_completed_status_raises(self, monkeypatch, status):
-        import app.services.generic_llm_client as glc
-        monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
-
-        mock_project_cls = MagicMock()
-        monkeypatch.setattr(glc, "AIProjectClient", mock_project_cls, raising=False)
-        monkeypatch.setattr(glc, "AzureKeyCredential", MagicMock(), raising=False)
-        monkeypatch.setattr(glc, "DefaultAzureCredential", MagicMock(), raising=False)
-
-        client = MagicMock()
-        mock_project_cls.return_value = client
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        client.agents.threads.create.return_value = MagicMock(id="t1")
-
-        run = MagicMock()
-        run.status = status
-        run.last_error = "transient failure"
-        client.agents.runs.create_and_process.return_value = run
-
-        with pytest.raises(LLMAPIError, match=str(status)):
+        monkeypatch.delenv("AZURE_AI_BING_CONNECTION_NAME", raising=False)
+        with pytest.raises(LLMConfigurationError, match="bing_connection_name"):
             GenericLLMClient.call_with_web_search(
-                api_type="bing_grounded",
+                api_type="azure_foundry_agents",
                 api_key="k",
-                model_name="agent-id",
+                model_name="gpt-4o",
                 prompt="Q?",
                 api_endpoint="https://my-foundry.example/",
-                api_version="2025-05-15-preview",
+            )
+
+    def test_requires_deployment_name(self, monkeypatch):
+        import app.services.generic_llm_client as glc
+        monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
+        with pytest.raises(LLMConfigurationError, match="model_name"):
+            GenericLLMClient.call_with_web_search(
+                api_type="azure_foundry_agents",
+                api_key="k",
+                model_name="",
+                prompt="Q?",
+                api_endpoint="https://my-foundry.example/",
+                bing_connection_name="bing-grounding",
             )
 
 
-class TestBingGroundedMessageExtraction:
-    """No str(t) fallback — if a content block has no .text.value, skip it
-    rather than returning the Python object repr as 'content'."""
+class TestAzureFoundryAgentsAuth:
+    """Azure AI Foundry Agents uses DefaultAzureCredential + AIProjectClient."""
 
-    def test_skips_messagetext_block_without_value(self, monkeypatch):
+    def test_uses_default_azure_credential_and_project_client(self, monkeypatch):
         import app.services.generic_llm_client as glc
         monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
 
         mock_project_cls = MagicMock()
+        mock_default_cred_cls = MagicMock()
+        mock_rnf = type("ResourceNotFoundError", (Exception,), {})
+
         monkeypatch.setattr(glc, "AIProjectClient", mock_project_cls, raising=False)
-        monkeypatch.setattr(glc, "AzureKeyCredential", MagicMock(), raising=False)
-        monkeypatch.setattr(glc, "DefaultAzureCredential", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "DefaultAzureCredential", mock_default_cred_cls, raising=False)
+        monkeypatch.setattr(glc, "ResourceNotFoundError", mock_rnf, raising=False)
+        monkeypatch.setattr(glc, "PromptAgentDefinition", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingTool", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchToolParameters", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchConfiguration", MagicMock(), raising=False)
 
-        client = MagicMock()
-        mock_project_cls.return_value = client
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        client.agents.threads.create.return_value = MagicMock(id="t1")
-        client.agents.runs.create_and_process.return_value = MagicMock(status="completed")
+        project = MagicMock()
+        mock_project_cls.return_value = project
 
-        # Build a message with two blocks: first has no .text.value, second does.
-        first_block = MagicMock()
-        first_block.text = MagicMock(spec=["whatever"])  # no .value attribute
-        first_block.text.value = None  # explicit: no value
+        # Connection lookup
+        conn = MagicMock()
+        conn.id = "/subscriptions/x/connections/bing-grounding"
+        project.connections.get.return_value = conn
 
-        second_block = MagicMock()
-        second_block.text = MagicMock()
-        second_block.text.value = "actual text content"
+        # Agent already exists with matching metadata
+        project.agents.get.return_value = MagicMock()
+        version = MagicMock()
+        version.status = "active"
+        version.metadata = {
+            "schema_version": "1",
+            "model": "gpt-4o",
+            "bing_conn_hash": "anything",  # Will be overwritten below
+        }
+        # Compute what the code expects
+        import hashlib
+        bing_hash = hashlib.sha256(conn.id.encode()).hexdigest()[:16]
+        version.metadata["bing_conn_hash"] = bing_hash
+        project.agents.list_versions.return_value = [version]
 
-        msg = MagicMock()
-        msg.role = "assistant"
-        msg.content = [first_block, second_block]
-        client.agents.messages.list.return_value = [msg]
+        # OpenAI client
+        openai_client = MagicMock()
+        project.get_openai_client.return_value = openai_client
+        response = MagicMock()
+        response.status = None
+        response.output_text = "grounded response"
+        openai_client.responses.create.return_value = response
 
         result = GenericLLMClient.call_with_web_search(
-            api_type="bing_grounded",
-            api_key="k",
-            model_name="agent-id",
+            api_type="azure_foundry_agents",
+            api_key="ignored",
+            model_name="gpt-4o",
             prompt="Q?",
             api_endpoint="https://my-foundry.example/",
-            api_version="2025-05-15-preview",
+            bing_connection_name="bing-grounding",
         )
-        # Should return the second block's value, NOT a Python repr of the first.
-        assert result == "actual text content"
-        assert "<" not in result and "object at" not in result
 
-    def test_accumulates_multiple_text_blocks(self, monkeypatch):
-        """When the assistant's response is split across multiple text blocks
-        (longer responses, tool-call interleaving, newer SDK shapes), the
-        extraction must concatenate all of them — not return on the first."""
+        assert result == "grounded response"
+        mock_default_cred_cls.assert_called_once()
+        mock_project_cls.assert_called_once_with(
+            endpoint="https://my-foundry.example/",
+            credential=mock_default_cred_cls.return_value,
+        )
+        project.connections.get.assert_called_once_with("bing-grounding")
+        openai_client.responses.create.assert_called_once()
+        call_kwargs = openai_client.responses.create.call_args.kwargs
+        assert call_kwargs["tool_choice"] == "required"
+        assert "agent_reference" in call_kwargs["extra_body"]
+
+
+class TestAzureFoundryAgentsCreation:
+    """When the agent doesn't exist yet, it's created via create_version."""
+
+    def test_creates_agent_on_not_found(self, monkeypatch):
         import app.services.generic_llm_client as glc
         monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
 
         mock_project_cls = MagicMock()
+        mock_default_cred_cls = MagicMock()
+        mock_rnf = type("ResourceNotFoundError", (Exception,), {})
+
         monkeypatch.setattr(glc, "AIProjectClient", mock_project_cls, raising=False)
-        monkeypatch.setattr(glc, "AzureKeyCredential", MagicMock(), raising=False)
-        monkeypatch.setattr(glc, "DefaultAzureCredential", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "DefaultAzureCredential", mock_default_cred_cls, raising=False)
+        monkeypatch.setattr(glc, "ResourceNotFoundError", mock_rnf, raising=False)
+        monkeypatch.setattr(glc, "PromptAgentDefinition", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingTool", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchToolParameters", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchConfiguration", MagicMock(), raising=False)
 
-        client = MagicMock()
-        mock_project_cls.return_value = client
-        client.__enter__.return_value = client
-        client.__exit__.return_value = False
-        client.agents.threads.create.return_value = MagicMock(id="t1")
-        client.agents.runs.create_and_process.return_value = MagicMock(status="completed")
+        project = MagicMock()
+        mock_project_cls.return_value = project
 
-        # Three blocks: two have real values, one is empty/skipped.
-        block_a = MagicMock()
-        block_a.text = MagicMock()
-        block_a.text.value = "First paragraph of the answer."
+        conn = MagicMock()
+        conn.id = "/subscriptions/x/connections/bing-grounding"
+        project.connections.get.return_value = conn
 
-        block_empty = MagicMock()
-        block_empty.text = MagicMock()
-        block_empty.text.value = None  # should be skipped
+        # Agent NOT found — triggers creation
+        project.agents.get.side_effect = mock_rnf()
 
-        block_b = MagicMock()
-        block_b.text = MagicMock()
-        block_b.text.value = "Second paragraph with citations [1] [2]."
-
-        msg = MagicMock()
-        msg.role = "assistant"
-        msg.content = [block_a, block_empty, block_b]
-        client.agents.messages.list.return_value = [msg]
+        openai_client = MagicMock()
+        project.get_openai_client.return_value = openai_client
+        response = MagicMock()
+        response.status = None
+        response.output_text = "created agent response"
+        openai_client.responses.create.return_value = response
 
         result = GenericLLMClient.call_with_web_search(
-            api_type="bing_grounded",
-            api_key="k",
-            model_name="agent-id",
+            api_type="azure_foundry_agents",
+            api_key="",
+            model_name="gpt-4o",
             prompt="Q?",
             api_endpoint="https://my-foundry.example/",
-            api_version="2025-05-15-preview",
+            bing_connection_name="bing-grounding",
         )
-        # Both non-empty blocks must appear; empty block must NOT contribute
-        # whitespace-only padding that breaks layout.
-        assert "First paragraph of the answer." in result
-        assert "Second paragraph with citations [1] [2]." in result
-        # Joined with the documented separator (double newline).
-        assert "\n\n" in result
-        # Sanity: no Python repr leaked through.
-        assert "<" not in result and "object at" not in result
+
+        assert result == "created agent response"
+        project.agents.create_version.assert_called_once()
+        create_kwargs = project.agents.create_version.call_args.kwargs
+        assert create_kwargs["agent_name"].startswith("tales-bing-")
+        assert create_kwargs["metadata"]["provider"] == "tales"
+
+
+class TestAzureFoundryAgentsOutputExtraction:
+    """If output_text is empty, falls back to iterating output items."""
+
+    def test_fallback_to_output_items(self, monkeypatch):
+        import app.services.generic_llm_client as glc
+        monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", True)
+
+        mock_project_cls = MagicMock()
+        mock_rnf = type("ResourceNotFoundError", (Exception,), {})
+
+        monkeypatch.setattr(glc, "AIProjectClient", mock_project_cls, raising=False)
+        monkeypatch.setattr(glc, "DefaultAzureCredential", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "ResourceNotFoundError", mock_rnf, raising=False)
+        monkeypatch.setattr(glc, "PromptAgentDefinition", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingTool", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchToolParameters", MagicMock(), raising=False)
+        monkeypatch.setattr(glc, "BingGroundingSearchConfiguration", MagicMock(), raising=False)
+
+        project = MagicMock()
+        mock_project_cls.return_value = project
+
+        conn = MagicMock()
+        conn.id = "/subscriptions/x/connections/bing-grounding"
+        project.connections.get.return_value = conn
+        project.agents.get.side_effect = mock_rnf()
+
+        openai_client = MagicMock()
+        project.get_openai_client.return_value = openai_client
+
+        # response.output_text is empty; must fallback to output items
+        response = MagicMock()
+        response.status = None
+        response.output_text = ""
+        block1 = MagicMock()
+        block1.text = "Part one."
+        block2 = MagicMock()
+        block2.text = "Part two."
+        item = MagicMock()
+        item.content = [block1, block2]
+        response.output = [item]
+        openai_client.responses.create.return_value = response
+
+        result = GenericLLMClient.call_with_web_search(
+            api_type="azure_foundry_agents",
+            api_key="",
+            model_name="gpt-4o",
+            prompt="Q?",
+            api_endpoint="https://my-foundry.example/",
+            bing_connection_name="bing-grounding",
+        )
+        assert "Part one." in result
+        assert "Part two." in result
+
+
+# ==================== test_connection() ====================
+
+
+class TestTestConnection:
+    @patch("app.services.generic_llm_client.GenericLLMClient._call_bing_v7_search")
+    def test_bing_v7_test_connection_calls_search(self, mock_search):
+        mock_search.return_value = [
+            {"title": "Result", "url": "https://example.com", "snippet": "A test snippet"},
+        ]
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="bing_v7",
+            api_key="test-key",
+            model_name="bing-v7-label",
+            api_endpoint="https://api.bing.microsoft.com/",
+        )
+        assert success is True
+        assert "Bing Search v7" in message
+        assert "A test snippet" in preview
+        mock_search.assert_called_once_with(
+            api_key="test-key",
+            query="test",
+            api_endpoint="https://api.bing.microsoft.com/",
+            timeout=30.0,
+            count=1,
+        )
+
+    @patch("app.services.generic_llm_client.GenericLLMClient._call_bing_v7_search")
+    def test_bing_v7_test_connection_api_error(self, mock_search):
+        mock_search.side_effect = LLMAPIError("Bing returned 403")
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="bing_v7",
+            api_key="bad-key",
+            model_name="bing",
+            api_endpoint="https://api.bing.microsoft.com/",
+        )
+        assert success is False
+        assert "API error" in message
+        assert "403" in message
+        assert preview is None
+
+    def test_bing_v7_test_connection_missing_endpoint(self):
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="bing_v7",
+            api_key="key",
+            model_name="bing",
+        )
+        assert success is False
+        assert "Configuration error" in message
+        assert "api_endpoint" in message
+
+    @patch("app.services.generic_llm_client.GenericLLMClient._call_azure_foundry_agents")
+    def test_azure_foundry_agents_test_connection_success(self, mock_foundry):
+        mock_foundry.return_value = "Hello! I'm an Azure AI agent."
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="azure_foundry_agents",
+            api_key="",
+            model_name="gpt-4o",
+            api_endpoint="https://my-foundry.example/",
+            bing_connection_name="bing-grounding",
+        )
+        assert success is True
+        assert "Azure AI Foundry" in message
+        assert "Hello!" in preview
+        mock_foundry.assert_called_once_with(
+            api_key="",
+            deployment_name="gpt-4o",
+            prompt="Hello, please respond with a brief greeting.",
+            api_endpoint="https://my-foundry.example/",
+            api_version=None,
+            timeout=60.0,
+            bing_connection_name="bing-grounding",
+        )
+
+    @patch("app.services.generic_llm_client.GenericLLMClient._call_azure_foundry_agents")
+    def test_bing_grounded_alias_routes_to_foundry_agents(self, mock_foundry):
+        """Legacy 'bing_grounded' api_type routes through test_connection too."""
+        mock_foundry.return_value = "Hello!"
+        success, message, _ = GenericLLMClient.test_connection(
+            api_type="bing_grounded",
+            api_key="",
+            model_name="gpt-4o",
+            api_endpoint="https://my-foundry.example/",
+            bing_connection_name="bing-grounding",
+        )
+        assert success is True
+        assert "Azure AI Foundry" in message
+
+    def test_azure_foundry_agents_test_connection_sdk_missing(self, monkeypatch):
+        import app.services.generic_llm_client as glc
+        monkeypatch.setattr(glc, "AZURE_AI_FOUNDRY_AVAILABLE", False)
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="azure_foundry_agents",
+            api_key="",
+            model_name="gpt-4o",
+            api_endpoint="https://my-foundry.example/",
+            bing_connection_name="bing-grounding",
+        )
+        assert success is False
+        assert "Configuration error" in message
+        assert "azure-foundry" in message
+
+    @patch("app.services.generic_llm_client.GenericLLMClient.call")
+    def test_standard_type_still_routes_through_call(self, mock_call):
+        mock_call.return_value = "Hi there!"
+        success, message, preview = GenericLLMClient.test_connection(
+            api_type="openai",
+            api_key="sk-test",
+            model_name="gpt-4",
+        )
+        assert success is True
+        assert message == "Connection successful"
+        assert "Hi there!" in preview
+        mock_call.assert_called_once()

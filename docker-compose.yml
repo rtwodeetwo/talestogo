@@ -75,7 +75,11 @@ services:
       # Optional web-search providers (only needed if you want the State of the
       # LLMs report section AND aren't already using Gemini or Perplexity).
       - BING_SEARCH_V7_API_KEY=${BING_SEARCH_V7_API_KEY:-}
-      - AZURE_FOUNDRY_API_KEY=${AZURE_FOUNDRY_API_KEY:-}
+      - AZURE_AI_PROJECT_ENDPOINT=${AZURE_AI_PROJECT_ENDPOINT:-}
+      - AZURE_AI_BING_CONNECTION_NAME=${AZURE_AI_BING_CONNECTION_NAME:-}
+      # - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      # - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      # - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
 
       # Email (optional - for sending user invitations)
       - RESEND_API_KEY=${RESEND_API_KEY:-}

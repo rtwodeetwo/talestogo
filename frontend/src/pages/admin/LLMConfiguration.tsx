@@ -48,6 +48,7 @@ interface LLMProvider {
   model_name: string;
   env_var_name: string | null;
   api_version: string | null;
+  bing_connection_name?: string | null;
   color: string;
   sort_order: number;
   is_enabled: boolean;
@@ -67,7 +68,7 @@ const API_TYPE_OPTIONS = [
   { value: 'azure', label: 'Azure OpenAI', description: 'GPT-4o, GPT-4, etc. on Azure', envVar: 'AZURE_OPENAI_API_KEY' },
   { value: 'openai_compatible', label: 'OpenAI Compatible', description: 'Perplexity, local models, etc.', envVar: 'PERPLEXITY_API_KEY' },
   { value: 'bing_v7', label: 'Bing Search v7', description: 'Web search; pairs with the analysis LLM. State of the LLMs only.', envVar: 'BING_SEARCH_V7_API_KEY' },
-  { value: 'bing_grounded', label: 'Azure AI Foundry — Bing Grounding', description: 'Azure-native grounded web search. Needs pip install talestogo[bing-grounded].', envVar: 'AZURE_FOUNDRY_API_KEY' },
+  { value: 'azure_foundry_agents', label: 'Azure AI Foundry Agents', description: 'Azure-native grounded web search using Foundry Agents + Grounding with Bing Search. Auth via Azure Entra ID.', envVar: 'AZURE_AI_PROJECT_ENDPOINT' },
 ];
 
 const DEFAULT_COLORS = [
@@ -101,6 +102,7 @@ const LLMConfiguration: React.FC = () => {
     model_name: '',
     env_var_name: '',
     api_version: '',
+    bing_connection_name: '',
     color: '#666666',
     is_enabled: true,
     use_for_analysis: false,
@@ -149,6 +151,7 @@ const LLMConfiguration: React.FC = () => {
         model_name: provider.model_name,
         env_var_name: provider.env_var_name || '',
         api_version: provider.api_version || '',
+        bing_connection_name: provider.bing_connection_name || '',
         color: provider.color,
         is_enabled: provider.is_enabled,
         use_for_analysis: provider.use_for_analysis,
@@ -167,6 +170,7 @@ const LLMConfiguration: React.FC = () => {
         model_name: '',
         env_var_name: '',
         api_version: '',
+        bing_connection_name: '',
         color: availableColor,
         is_enabled: true,
         use_for_analysis: providers.length === 0, // First provider defaults to analysis
@@ -198,7 +202,7 @@ const LLMConfiguration: React.FC = () => {
     const isWebSearchType =
       value === 'google' ||
       value === 'bing_v7' ||
-      value === 'bing_grounded' ||
+      value === 'azure_foundry_agents' ||
       (value === 'openai_compatible' && formData.api_endpoint.toLowerCase().includes('perplexity'));
     setFormData(prev => ({
       ...prev,
@@ -217,7 +221,7 @@ const LLMConfiguration: React.FC = () => {
       supports_web_search:
         prev.api_type === 'google' ||
         prev.api_type === 'bing_v7' ||
-        prev.api_type === 'bing_grounded' ||
+        prev.api_type === 'azure_foundry_agents' ||
         isPerplexity,
     }));
   };
@@ -246,6 +250,7 @@ const LLMConfiguration: React.FC = () => {
           model_name: formData.model_name,
           env_var_name: formData.env_var_name || null,
           api_version: formData.api_version || null,
+          bing_connection_name: formData.bing_connection_name || null,
           color: formData.color,
           is_enabled: formData.is_enabled,
           use_for_analysis: formData.use_for_analysis,
@@ -263,6 +268,7 @@ const LLMConfiguration: React.FC = () => {
           model_name: formData.model_name,
           env_var_name: formData.env_var_name || undefined,
           api_version: formData.api_version || undefined,
+          bing_connection_name: formData.bing_connection_name || undefined,
           color: formData.color,
           sort_order: providers.length,
           is_enabled: formData.is_enabled,
@@ -470,6 +476,16 @@ const LLMConfiguration: React.FC = () => {
                   </Box>
 
                   {(() => {
+                    if (provider.api_type === 'azure_foundry_agents') {
+                      return (
+                        <Box sx={{ mb: 1 }}>
+                          <Chip size="small" label="Auth: Azure Entra ID" color="info" variant="filled" />
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                            Authenticated via DefaultAzureCredential (managed identity, az login, or service principal env vars)
+                          </Typography>
+                        </Box>
+                      );
+                    }
                     const envVar = provider.resolved_env_var || getEnvVarForProvider(provider.api_type, provider.env_var_name);
                     const present = provider.api_key_present === true;
                     return (
@@ -562,10 +578,8 @@ const LLMConfiguration: React.FC = () => {
             <TextField
               fullWidth
               label={
-                formData.api_type === 'azure'
+                formData.api_type === 'azure' || formData.api_type === 'azure_foundry_agents'
                   ? 'Deployment Name'
-                  : formData.api_type === 'bing_grounded'
-                  ? 'Agent ID'
                   : formData.api_type === 'bing_v7'
                   ? 'Identifier (label only)'
                   : 'Model Name'
@@ -577,8 +591,8 @@ const LLMConfiguration: React.FC = () => {
               helperText={
                 formData.api_type === 'azure'
                   ? "Azure deployment name (the deployment you created in Azure OpenAI Studio, e.g., 'gpt-4o-prod')"
-                  : formData.api_type === 'bing_grounded'
-                  ? "Azure AI Foundry agent ID. The agent must have the Grounding-with-Bing-Search tool attached in AI Foundry Studio."
+                  : formData.api_type === 'azure_foundry_agents'
+                  ? "Model deployment name in the Foundry project (must support Grounding with Bing Search)."
                   : formData.api_type === 'bing_v7'
                   ? "Not used by Bing v7 (no LLM call). Set anything you like — used as a label in charts/logs (e.g., 'bing')."
                   : "Model identifier (e.g., 'gpt-4o', 'claude-3-haiku-20240307', 'gemini-2.0-flash')"
@@ -633,7 +647,7 @@ const LLMConfiguration: React.FC = () => {
               />
             )}
 
-            {(formData.api_type === 'bing_grounded') && (
+            {(formData.api_type === 'azure_foundry_agents') && (
               <>
                 <TextField
                   fullWidth
@@ -642,35 +656,49 @@ const LLMConfiguration: React.FC = () => {
                   onChange={(e) => setFormData({ ...formData, api_endpoint: e.target.value })}
                   required
                   sx={{ mb: 2 }}
-                  helperText="Your AI Foundry project endpoint (from Azure AI Foundry Studio → Project Properties). Requires `pip install talestogo[bing-grounded]` server-side."
+                  helperText="Your AI Foundry project endpoint (from Azure AI Foundry Studio → Project → Overview)."
                 />
                 <TextField
                   fullWidth
-                  label="API Version"
-                  value={formData.api_version}
-                  onChange={(e) => setFormData({ ...formData, api_version: e.target.value })}
+                  label="Bing Connection Name"
+                  value={formData.bing_connection_name}
+                  onChange={(e) => setFormData({ ...formData, bing_connection_name: e.target.value })}
                   required
                   sx={{ mb: 2 }}
-                  placeholder="2025-05-15-preview"
-                  helperText="Azure AI Foundry Agents API version."
+                  helperText="Foundry project connection name for Grounding with Bing Search (AI Foundry → Project → Connections tab)."
                 />
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ mb: 0.5 }}>
+                    <strong>Authentication:</strong> Azure AI Foundry Agents uses Azure Entra ID (DefaultAzureCredential). No API key is stored.
+                  </Typography>
+                  <Typography variant="body2" component="div">
+                    <ul style={{ margin: 0, paddingLeft: 16 }}>
+                      <li>Local dev: run <code>az login</code></li>
+                      <li>System-assigned managed identity: no extra config needed</li>
+                      <li>User-assigned managed identity: set <code>AZURE_CLIENT_ID</code></li>
+                      <li>Service principal: set <code>AZURE_CLIENT_ID</code> + <code>AZURE_TENANT_ID</code> + <code>AZURE_CLIENT_SECRET</code></li>
+                    </ul>
+                  </Typography>
+                </Alert>
               </>
             )}
 
-            {/* Environment Variable Name - for custom providers */}
-            <TextField
-              fullWidth
-              label="Environment Variable Name (optional)"
-              value={formData.env_var_name}
-              onChange={(e) => setFormData({ ...formData, env_var_name: e.target.value })}
-              sx={{ mb: 2 }}
-              placeholder={API_TYPE_OPTIONS.find(o => o.value === formData.api_type)?.envVar || ''}
-              helperText={
-                formData.env_var_name
-                  ? `Will read API key from: ${formData.env_var_name}`
-                  : `Default: ${API_TYPE_OPTIONS.find(o => o.value === formData.api_type)?.envVar || 'Unknown'}. Override for custom providers (e.g., MISTRAL_API_KEY).`
-              }
-            />
+            {/* Environment Variable Name - for custom providers (hidden for azure_foundry_agents which uses no API key) */}
+            {formData.api_type !== 'azure_foundry_agents' && (
+              <TextField
+                fullWidth
+                label="Environment Variable Name (optional)"
+                value={formData.env_var_name}
+                onChange={(e) => setFormData({ ...formData, env_var_name: e.target.value })}
+                sx={{ mb: 2 }}
+                placeholder={API_TYPE_OPTIONS.find(o => o.value === formData.api_type)?.envVar || ''}
+                helperText={
+                  formData.env_var_name
+                    ? `Will read API key from: ${formData.env_var_name}`
+                    : `Default: ${API_TYPE_OPTIONS.find(o => o.value === formData.api_type)?.envVar || 'Unknown'}. Override for custom providers (e.g., MISTRAL_API_KEY).`
+                }
+              />
+            )}
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" gutterBottom>

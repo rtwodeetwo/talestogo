@@ -24,6 +24,9 @@ from app import models, crud
 from app.services.llm_provider_manager import LLMProviderManager, ProviderConfig
 from app.services.generic_llm_client import GenericLLMClient, LLMAPIError, LLMConfigurationError
 
+# Retrieval-only provider types — skipped during regular query collection.
+COLLECTION_SKIP_TYPES = ("bing_v7",)
+
 
 class ResponseCollector:
     """Collects responses from AI platforms."""
@@ -119,7 +122,9 @@ class ResponseCollector:
             self.log_platform_error(provider.display_name, error_msg, query_text)
             return None
         except Exception as e:
-            error_msg = f"{provider.display_name} unexpected error: {str(e)}"
+            import traceback
+            tb = traceback.format_exc()
+            error_msg = f"{provider.display_name} unexpected error: {type(e).__name__}: {e}\n{tb}"
             print(f"  ✗ {error_msg}")
             self.log_platform_error(provider.display_name, error_msg, query_text)
             return None
@@ -127,14 +132,17 @@ class ResponseCollector:
     def save_response(self, query_id: str, query_text: str, platform: str,
                      response_text: str) -> models.Response:
         """Save a response to the database."""
+        # Sanitize for PostgreSQL: strip null bytes and invalid surrogates
+        clean_text = response_text.replace("\x00", "").encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace") if response_text else response_text
+
         response = models.Response(
             user_id=self.user_id,
-            brand_id=self.brand_id,  # Associate response with brand
-            batch_id=self.batch_id,  # Associate response with batch
+            brand_id=self.brand_id,
+            batch_id=self.batch_id,
             query_id=query_id,
             query_text=query_text,
             platform=platform,
-            response_text=response_text,
+            response_text=clean_text,
             timestamp=datetime.utcnow()
         )
         self.db.add(response)
@@ -154,6 +162,8 @@ class ResponseCollector:
         # If the caller passed a platforms filter, intersect by display_name.
         for provider in self.dynamic_providers:
             if not provider.is_enabled:
+                continue
+            if provider.api_type in COLLECTION_SKIP_TYPES:
                 continue
             if platforms is not None and provider.display_name not in platforms:
                 continue
@@ -175,6 +185,39 @@ class ResponseCollector:
 
         return results
 
+    def _mark_batch_failed(self, error_message: str):
+        """Mark the current batch as failed with error details."""
+        if not self.batch_id:
+            return
+        try:
+            self.db.rollback()
+            batch = self.db.query(models.CollectionBatch).filter(
+                models.CollectionBatch.id == self.batch_id
+            ).first()
+            if batch and batch.status != 'completed':
+                batch.status = 'failed'
+                batch.completed_at = datetime.utcnow()
+                self.db.commit()
+        except Exception:
+            pass
+
+    def _mark_task_failed(self, error_message: str):
+        """Mark the task status as failed with full error details."""
+        if not self.task_status_id:
+            return
+        try:
+            self.db.rollback()
+            task = self.db.query(models.TaskStatus).filter(
+                models.TaskStatus.id == self.task_status_id
+            ).first()
+            if task and task.status != 'completed':
+                task.status = "failed"
+                task.error_message = error_message
+                task.completed_at = datetime.utcnow()
+                self.db.commit()
+        except Exception:
+            pass
+
     def collect_all(self, limit: Optional[int] = None, platforms: List[str] = None) -> Dict[str, int]:
         """Collect responses for all active queries for this user and brand."""
         query = self.db.query(models.Query).filter(
@@ -192,8 +235,9 @@ class ResponseCollector:
             queries = queries[:limit]
 
         # Determine platforms to use - dynamic providers take precedence
+        # bing_v7 is retrieval-only (no LLM) — exclude from collection count.
         if self.dynamic_providers:
-            platforms_list = [p.display_name for p in self.dynamic_providers if p.is_enabled]
+            platforms_list = [p.display_name for p in self.dynamic_providers if p.is_enabled and p.api_type not in COLLECTION_SKIP_TYPES]
         else:
             platforms_list = platforms or ['ChatGPT', 'Claude', 'Gemini', 'Perplexity']
 
@@ -240,25 +284,38 @@ class ResponseCollector:
         total_items = len(queries) * len(platforms_list)
         processed_count = 0
 
-        for idx, query in enumerate(queries, 1):
-            # Update progress before processing query
-            self.update_task_progress(
-                processed_count,
-                total_items,
-                f"Collecting responses for query {idx}/{len(queries)}"
+        try:
+            for idx, query in enumerate(queries, 1):
+                # Update progress before processing query
+                self.update_task_progress(
+                    processed_count,
+                    total_items,
+                    f"Collecting responses for query {idx}/{len(queries)}"
+                )
+
+                results = self.collect_for_query(query, platforms)
+
+                if any(results.values()):
+                    stats['successful'] += 1
+                else:
+                    stats['failed'] += 1
+
+                for platform, success in results.items():
+                    if success:
+                        stats[platform] += 1
+                    processed_count += 1
+
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            error_msg = (
+                f"Collection crashed at query {processed_count}/{total_items}: "
+                f"{type(e).__name__}: {e}\n\nTraceback:\n{tb}"
             )
-
-            results = self.collect_for_query(query, platforms)
-
-            if any(results.values()):
-                stats['successful'] += 1
-            else:
-                stats['failed'] += 1
-
-            for platform, success in results.items():
-                if success:
-                    stats[platform] += 1
-                processed_count += 1
+            print(f"\n❌ {error_msg}", file=sys.stderr)
+            self._mark_task_failed(error_msg)
+            self._mark_batch_failed(error_msg)
+            raise
 
         # Mark task as complete
         self.update_task_progress(total_items, total_items, "Collection completed")
@@ -275,10 +332,6 @@ class ResponseCollector:
             batch.total_responses = total_responses
             batch.total_queries = stats['total_queries']
             self.db.commit()
-
-            # Note: Batch analytics are computed AFTER analysis completes (in data_pipeline.py
-            # or analyze_responses.py), not here. At this point responses haven't been analyzed
-            # yet, so brand_mentioned and other fields are still empty.
 
         print(f"\n{'='*60}")
         print(f"Collection Summary")
@@ -359,6 +412,7 @@ def main():
 
     # Create database session
     db = SessionLocal()
+    collector = None
 
     try:
         # Verify user exists
@@ -419,10 +473,23 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n⚠️  Collection interrupted by user")
+        if collector:
+            collector._mark_task_failed("Collection interrupted by user")
+            collector._mark_batch_failed("Collection interrupted by user")
+        sys.exit(1)
+    except SystemExit:
+        raise
     except Exception as e:
-        print(f"\n❌ Error: {e}")
         import traceback
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        error_msg = f"{type(e).__name__}: {e}\n\nTraceback:\n{tb}"
+        print(f"\n❌ Collection failed: {error_msg}", file=sys.stderr)
+
+        if collector:
+            collector._mark_task_failed(error_msg)
+            collector._mark_batch_failed(error_msg)
+
+        sys.exit(1)
     finally:
         db.close()
 

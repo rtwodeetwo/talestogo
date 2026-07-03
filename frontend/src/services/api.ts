@@ -412,6 +412,7 @@ export const llmProvidersAPI = {
     model_name: string;
     env_var_name?: string;
     api_version?: string;
+    bing_connection_name?: string;
     color?: string;
     sort_order?: number;
     is_enabled?: boolean;
@@ -430,6 +431,7 @@ export const llmProvidersAPI = {
     model_name?: string;
     env_var_name?: string;
     api_version?: string;
+    bing_connection_name?: string | null;
     color?: string;
     sort_order?: number;
     is_enabled?: boolean;

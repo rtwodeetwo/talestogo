@@ -1,13 +1,12 @@
 """
 Router-level regression tests for the LLM Providers admin endpoint.
 
-Covers the post-merge review findings on PR #5 (Bing web search):
-- Bing types (bing_v7, bing_grounded) are web-search-only and must be rejected
-  if a user tries to mark one as `use_for_analysis=True` — either at create or
-  update time.
+Covers:
+- Web-search-only types (bing_v7, azure_foundry_agents) must be rejected if a
+  user tries to mark one as `use_for_analysis=True` — either at create or update.
 - The update endpoint must enforce the same per-type field requirements that
   the create endpoint already enforces (api_endpoint for bing_v7;
-  api_endpoint + api_version for bing_grounded).
+  api_endpoint for azure_foundry_agents).
 """
 import pytest
 from fastapi import Depends
@@ -83,13 +82,13 @@ def _cleanup_overrides():
 
 @pytest.mark.parametrize("bing_type,extra_fields", [
     ("bing_v7", {"api_endpoint": "https://api.bing.microsoft.com/"}),
-    ("bing_grounded", {
+    ("azure_foundry_agents", {
         "api_endpoint": "https://my-foundry.example/",
-        "api_version": "2025-05-15-preview",
+        "bing_connection_name": "bing-grounding",
     }),
 ])
 def test_create_rejects_bing_with_use_for_analysis_true(test_db, bing_type, extra_fields):
-    """A Bing provider with use_for_analysis=True would crash report generation
+    """A web-search-only provider with use_for_analysis=True would crash report generation
     because GenericLLMClient.call() has no branch for these api_types."""
     client = _make_admin_client(test_db)
     payload = {
@@ -158,17 +157,17 @@ def test_update_rejects_clearing_bing_v7_endpoint(test_db):
     assert "api_endpoint" in resp.json()["detail"]
 
 
-def test_update_rejects_clearing_bing_grounded_version(test_db):
-    """Trying to PUT api_version=None on a bing_grounded provider must fail."""
+def test_update_rejects_clearing_azure_foundry_agents_endpoint(test_db):
+    """Trying to PUT api_endpoint=None on an azure_foundry_agents provider must fail."""
     provider_id = _seed_bing_provider(
-        test_db, "bing_grounded",
+        test_db, "azure_foundry_agents",
         api_endpoint="https://my-foundry.example/",
-        api_version="2025-05-15-preview",
+        bing_connection_name="bing-grounding",
     )
     client = _make_admin_client(test_db)
-    resp = client.put(f"/admin/llm-providers/{provider_id}", json={"api_version": None})
+    resp = client.put(f"/admin/llm-providers/{provider_id}", json={"api_endpoint": None})
     assert resp.status_code == 400, resp.text
-    assert "api_version" in resp.json()["detail"]
+    assert "api_endpoint" in resp.json()["detail"]
 
 
 def test_update_rejects_flipping_bing_to_analysis_provider(test_db):

@@ -126,7 +126,8 @@ def test_get_analysis_provider_returns_none_when_nothing_configured(test_db, mon
 def test_api_type_to_env_var_includes_bing():
     """Both Bing api_types must have default env var bindings."""
     assert API_TYPE_TO_ENV_VAR["bing_v7"] == "BING_SEARCH_V7_API_KEY"
-    assert API_TYPE_TO_ENV_VAR["bing_grounded"] == "AZURE_FOUNDRY_API_KEY"
+    assert API_TYPE_TO_ENV_VAR["azure_foundry_agents"] == "AZURE_AI_PROJECT_ENDPOINT"
+    assert API_TYPE_TO_ENV_VAR["bing_grounded"] == "AZURE_AI_PROJECT_ENDPOINT"  # backward compat
 
 
 def test_bing_v7_db_provider_threads_analysis_provider_into_call(test_db, monkeypatch):
@@ -165,10 +166,53 @@ def test_bing_v7_db_provider_threads_analysis_provider_into_call(test_db, monkey
     assert kwargs["api_endpoint"] == "https://api.bing.microsoft.com/"
 
 
+def test_azure_foundry_agents_call_with_web_search_without_api_key(monkeypatch):
+    """azure_foundry_agents uses DefaultAzureCredential, not an API key — must not
+    raise LLMConfigurationError when no API key env var is set."""
+    monkeypatch.delenv("AZURE_AI_PROJECT_ENDPOINT", raising=False)
+    cfg = ProviderConfig(
+        provider_key="azure_foundry",
+        display_name="Foundry Bing",
+        api_type="azure_foundry_agents",
+        model_name="gpt-4o",
+        api_endpoint="https://x.example/",
+        bing_connection_name="bing-grounding",
+        supports_web_search=True,
+    )
+
+    with patch("app.services.llm_provider_manager.GenericLLMClient.call_with_web_search") as mock_ws:
+        mock_ws.return_value = "grounded response"
+        result = cfg.call_with_web_search(prompt="Q?")
+
+    assert result == "grounded response"
+    mock_ws.assert_called_once()
+    assert mock_ws.call_args.kwargs["api_key"] == ""
+    assert mock_ws.call_args.kwargs["bing_connection_name"] == "bing-grounding"
+
+
+def test_bing_grounded_backward_compat_also_skips_key_check(monkeypatch):
+    """Legacy bing_grounded api_type also bypasses the API key check."""
+    monkeypatch.delenv("AZURE_AI_PROJECT_ENDPOINT", raising=False)
+    cfg = ProviderConfig(
+        provider_key="bing_grounded",
+        display_name="Foundry Bing",
+        api_type="bing_grounded",
+        model_name="gpt-4o",
+        api_endpoint="https://x.example/",
+        bing_connection_name="bing-grounding",
+        supports_web_search=True,
+    )
+
+    with patch("app.services.llm_provider_manager.GenericLLMClient.call_with_web_search") as mock_ws:
+        mock_ws.return_value = "grounded response"
+        result = cfg.call_with_web_search(prompt="Q?")
+
+    assert result == "grounded response"
+
+
 def test_get_web_search_providers_includes_bing(test_db, monkeypatch):
     """Both Bing types must be discoverable via get_web_search_providers."""
     monkeypatch.setenv("BING_SEARCH_V7_API_KEY", "x")
-    monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "y")
     db = test_db()
     db.add(models.LLMProvider(
         tenant_id=None, provider_key="bing_v7", display_name="Bing v7",
@@ -176,12 +220,32 @@ def test_get_web_search_providers_includes_bing(test_db, monkeypatch):
         model_name="bing", is_enabled=True, supports_web_search=True,
     ))
     db.add(models.LLMProvider(
-        tenant_id=None, provider_key="bing_grounded", display_name="Foundry Bing",
-        api_type="bing_grounded", api_endpoint="https://x.example/",
-        api_version="2025-05-15-preview", model_name="agent-id",
+        tenant_id=None, provider_key="azure_foundry", display_name="Foundry Bing",
+        api_type="azure_foundry_agents", api_endpoint="https://x.example/",
+        model_name="gpt-4o", bing_connection_name="bing-grounding",
         is_enabled=True, supports_web_search=True,
     ))
     db.commit()
 
     types = {p.api_type for p in LLMProviderManager(db).get_web_search_providers()}
-    assert {"bing_v7", "bing_grounded"}.issubset(types)
+    assert {"bing_v7", "azure_foundry_agents"}.issubset(types)
+
+
+def test_azure_foundry_agents_has_api_key_checks_endpoint():
+    """azure_foundry_agents uses endpoint presence (not env var) for has_api_key."""
+    cfg = ProviderConfig(
+        provider_key="foundry",
+        display_name="Foundry",
+        api_type="azure_foundry_agents",
+        model_name="gpt-4o",
+        api_endpoint="https://x.example/",
+    )
+    assert cfg.has_api_key() is True
+
+    cfg_no_endpoint = ProviderConfig(
+        provider_key="foundry2",
+        display_name="Foundry2",
+        api_type="azure_foundry_agents",
+        model_name="gpt-4o",
+    )
+    assert cfg_no_endpoint.has_api_key() is False

@@ -77,7 +77,7 @@ class Response(Base):
     # No Foreign Key constraint, just index for faster lookups by query_id
     query_id = Column(String(10), index=True, nullable=False)
     query_text = Column(Text) # Denormalized
-    platform = Column(String(20), index=True, nullable=False) # ChatGPT, Claude, Gemini
+    platform = Column(String(100), index=True, nullable=False)
     response_text = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow, index=True)
     # Analysis fields
@@ -307,6 +307,7 @@ class LLMProvider(Base):
     model_name = Column(String(100), nullable=False)  # e.g., "gpt-4o", "claude-3-haiku-20240307"; for Azure, this is the deployment name
     env_var_name = Column(String(100), nullable=True)  # Custom env var name for non-default providers (e.g., "MISTRAL_API_KEY")
     api_version = Column(String(50), nullable=True)  # Azure OpenAI api_version (e.g., "2024-10-21" or "2024-12-01-preview"); unused for other api_types
+    bing_connection_name = Column(String(200), nullable=True)  # Foundry project connection name for Bing Grounding
 
     # Display settings
     color = Column(String(7), default="#666666")  # Hex color for charts

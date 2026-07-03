@@ -3,7 +3,7 @@ Generic LLM Client for Tales Project
 
 Routes API calls to different LLM providers based on configuration.
 Supports OpenAI, Anthropic, Google (Gemini), Azure OpenAI, OpenAI-compatible
-APIs, and Bing web search (v7 REST + Azure AI Foundry Grounding with Bing).
+APIs, Bing Search v7 REST, and Azure AI Foundry Agents (Grounding with Bing).
 """
 
 import os
@@ -30,15 +30,21 @@ try:
 except ImportError:
     GOOGLE_AVAILABLE = False
 
-# Azure AI Foundry SDK — used only by the `bing_grounded` api_type. Declared
-# as an optional extra in pyproject.toml ([project.optional-dependencies]
-# bing-grounded). Installed via `pip install .[bing-grounded]`. If absent,
-# `bing_grounded` calls return a clear "install the bing-grounded extra"
-# error rather than a bare ImportError. `bing_v7` does not need this SDK.
+# Azure AI Foundry Projects SDK — used by the `azure_foundry_agents` api_type.
+# Declared as an optional extra in pyproject.toml ([project.optional-dependencies]
+# azure-foundry). Installed via `pip install .[azure-foundry]`. If absent,
+# `azure_foundry_agents` calls return a clear "install the azure-foundry extra"
+# error rather than a bare ImportError.
 try:
     from azure.ai.projects import AIProjectClient
+    from azure.ai.projects.models import (
+        PromptAgentDefinition,
+        BingGroundingTool,
+        BingGroundingSearchToolParameters,
+        BingGroundingSearchConfiguration,
+    )
     from azure.identity import DefaultAzureCredential
-    from azure.core.credentials import AzureKeyCredential
+    from azure.core.exceptions import ResourceNotFoundError
     AZURE_AI_FOUNDRY_AVAILABLE = True
 except ImportError:
     AZURE_AI_FOUNDRY_AVAILABLE = False
@@ -84,7 +90,8 @@ class GenericLLMClient:
         api_version: Optional[str] = None,
         max_tokens: int = 4000,
         temperature: float = 0.7,
-        timeout: float = DEFAULT_TIMEOUT
+        timeout: float = DEFAULT_TIMEOUT,
+        bing_connection_name: Optional[str] = None,
     ) -> str:
         """
         Call an LLM API and return the response text.
@@ -139,6 +146,15 @@ class GenericLLMClient:
             return GenericLLMClient._call_openai_compatible(
                 api_key, model_name, prompt, api_endpoint, max_tokens, temperature, timeout
             )
+        elif api_type in ("azure_foundry_agents", "bing_grounded"):
+            if not api_endpoint:
+                raise LLMConfigurationError(
+                    "api_endpoint (Azure AI Foundry project endpoint) is required for azure_foundry_agents"
+                )
+            return GenericLLMClient._call_azure_foundry_agents(
+                api_key, model_name, prompt, api_endpoint, api_version, timeout,
+                bing_connection_name=bing_connection_name,
+            )
         else:
             raise LLMConfigurationError(f"Unknown API type: {api_type}")
 
@@ -152,6 +168,7 @@ class GenericLLMClient:
         api_version: Optional[str] = None,
         analysis_provider: Optional[Any] = None,
         timeout: float = DEFAULT_TIMEOUT,
+        bing_connection_name: Optional[str] = None,
     ) -> str:
         """
         Call an LLM API with web search grounding (for State of the LLMs feature).
@@ -161,23 +178,23 @@ class GenericLLMClient:
         - "openai_compatible" with Perplexity sonar: built-in web search
         - "bing_v7": Bing Search v7 REST retrieval, synthesized by analysis_provider
           (requires analysis_provider to be passed in)
-        - "bing_grounded": Azure AI Foundry agent with Grounding-with-Bing tool
-          (requires the optional `bing-grounded` extra to be installed)
-
-        Azure OpenAI itself (api_type="azure") is intentionally NOT supported here —
-        it has no native web search. Azure-only deployments configure a Bing
-        provider alongside Azure to populate the State of the LLMs section.
+        - "azure_foundry_agents" (alias: "bing_grounded"): Azure AI Foundry Prompt
+          Agent with Grounding-with-Bing-Search, invoked via OpenAI Responses API.
+          Auth via DefaultAzureCredential (no API key). Requires azure-foundry extra.
 
         Args:
-            api_type: One of "google", "openai_compatible", "bing_v7", "bing_grounded"
-            api_key: The decrypted API key
-            model_name: Provider-specific identifier (model / deployment / agent ID)
+            api_type: One of "google", "openai_compatible", "bing_v7",
+                "azure_foundry_agents", "bing_grounded"
+            api_key: The decrypted API key (unused for azure_foundry_agents)
+            model_name: Provider-specific identifier (model / deployment name)
             prompt: The prompt to send
-            api_endpoint: Custom endpoint URL (Perplexity / Bing v7 / AI Foundry)
-            api_version: Azure AI Foundry api_version (bing_grounded only)
+            api_endpoint: Custom endpoint URL (Perplexity / Bing v7 / AI Foundry project)
+            api_version: Unused for azure_foundry_agents (kept for interface compat)
             analysis_provider: ProviderConfig used to synthesize Bing v7 search
                 results. Required when api_type=="bing_v7". Ignored otherwise.
             timeout: Request timeout in seconds
+            bing_connection_name: Foundry project connection name for Bing Grounding
+                (azure_foundry_agents only). Falls back to AZURE_AI_BING_CONNECTION_NAME env var.
 
         Returns:
             The response text from the LLM (or synthesized prose for bing_v7).
@@ -192,7 +209,6 @@ class GenericLLMClient:
                 api_key, model_name, prompt, timeout
             )
         elif api_type == "openai_compatible":
-            # Perplexity sonar model has built-in web search
             if not api_endpoint:
                 raise LLMConfigurationError(
                     "api_endpoint is required for openai_compatible API type"
@@ -214,20 +230,21 @@ class GenericLLMClient:
             return GenericLLMClient._call_bing_v7_grounded_synthesis(
                 api_key, prompt, api_endpoint, analysis_provider, timeout
             )
-        elif api_type == "bing_grounded":
+        elif api_type in ("azure_foundry_agents", "bing_grounded"):
             if not api_endpoint:
                 raise LLMConfigurationError(
-                    "api_endpoint (Azure AI Foundry project endpoint) is required for bing_grounded"
+                    "api_endpoint (Azure AI Foundry project endpoint) is required for azure_foundry_agents"
                 )
-            return GenericLLMClient._call_bing_grounded(
-                api_key, model_name, prompt, api_endpoint, api_version, timeout
+            return GenericLLMClient._call_azure_foundry_agents(
+                api_key, model_name, prompt, api_endpoint, api_version, timeout,
+                bing_connection_name=bing_connection_name,
             )
         else:
             raise LLMConfigurationError(
                 f"API type '{api_type}' does not support web search. "
                 "Web search is provided by: 'google' (Gemini grounding), 'openai_compatible' "
                 "(Perplexity sonar), 'bing_v7' (Bing Search v7 + analysis LLM), "
-                "or 'bing_grounded' (Azure AI Foundry Grounding with Bing)."
+                "or 'azure_foundry_agents' (Azure AI Foundry Grounding with Bing)."
             )
 
     @staticmethod
@@ -493,124 +510,205 @@ class GenericLLMClient:
             prompt=augmented_prompt, max_tokens=4000, temperature=0.5
         )
 
-    # ==================== Azure AI Foundry — Grounding with Bing ====================
+    # ==================== Azure AI Foundry Agents — Grounding with Bing ====================
 
     @staticmethod
-    def _call_bing_grounded(
+    def _get_or_create_bing_grounded_agent(
+        project: Any,
+        deployment_name: str,
+        bing_connection_id: str,
+    ) -> str:
+        """Get or create a deterministic Foundry Prompt Agent with Bing Grounding.
+
+        Naming: tales-bing-{hash8} where hash8 = first 8 chars of
+        SHA-256("{deployment_name}:{bing_connection_id}").
+
+        Returns the agent name to pass to the Responses API agent_reference.
+        """
+        import hashlib
+
+        hash_input = f"{deployment_name}:{bing_connection_id}"
+        hash8 = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+        agent_name = f"tales-bing-{hash8}"
+
+        metadata = {
+            "provider": "tales",
+            "purpose": "bing-grounding",
+            "schema_version": "1",
+            "model": deployment_name,
+            "bing_conn_hash": hashlib.sha256(bing_connection_id.encode()).hexdigest()[:16],
+        }
+
+        def _build_definition() -> Any:
+            return PromptAgentDefinition(
+                model=deployment_name,
+                instructions="You are a helpful assistant. Answer the user's question using web search results from Bing.",
+                tools=[
+                    BingGroundingTool(
+                        bing_grounding=BingGroundingSearchToolParameters(
+                            search_configurations=[
+                                BingGroundingSearchConfiguration(
+                                    project_connection_id=bing_connection_id
+                                )
+                            ]
+                        )
+                    )
+                ],
+            )
+
+        def _create_version() -> None:
+            project.agents.create_version(
+                agent_name=agent_name,
+                definition=_build_definition(),
+                metadata=metadata,
+                description="Tales AI Foundry agent for Bing-grounded web search",
+            )
+
+        def _has_compatible_version() -> bool:
+            versions = project.agents.list_versions(agent_name=agent_name, order="desc", limit=10)
+            for v in versions:
+                v_meta = getattr(v, "metadata", None) or {}
+                v_status = getattr(v, "status", None)
+                if (
+                    v_status == "active"
+                    and v_meta.get("schema_version") == metadata["schema_version"]
+                    and v_meta.get("model") == metadata["model"]
+                    and v_meta.get("bing_conn_hash") == metadata["bing_conn_hash"]
+                ):
+                    return True
+            return False
+
+        try:
+            project.agents.get(agent_name=agent_name)
+        except ResourceNotFoundError:
+            try:
+                _create_version()
+            except Exception:
+                # Race condition: another request created it simultaneously.
+                # Verify it exists now; if not, re-raise.
+                try:
+                    project.agents.get(agent_name=agent_name)
+                except ResourceNotFoundError:
+                    raise
+            return agent_name
+
+        # Agent exists — find an active version with matching metadata
+        if _has_compatible_version():
+            return agent_name
+
+        # No compatible version — create a new one
+        _create_version()
+        return agent_name
+
+    @staticmethod
+    def _call_azure_foundry_agents(
         api_key: str,
-        agent_id_or_deployment: str,
+        deployment_name: str,
         prompt: str,
         api_endpoint: str,
         api_version: Optional[str],
         timeout: float,
+        bing_connection_name: Optional[str] = None,
     ) -> str:
-        """Call an Azure AI Foundry agent that has the Grounding-with-Bing tool attached.
+        """Call an Azure AI Foundry Prompt Agent with Grounding-with-Bing-Search.
 
-        Single round-trip — the agent retrieves via Bing and synthesizes the answer
-        internally; we just send the prompt and read the response.
+        Uses the azure-ai-projects SDK to get-or-create a deterministic agent,
+        then invokes it via the OpenAI Responses API (agent_reference pattern).
+        Auth: DefaultAzureCredential (Entra ID), not the api_key parameter.
 
-        Requires the optional `bing-grounded` extra to be installed:
-            pip install talestogo[bing-grounded]
-
-        NOTE: This implementation targets Azure AI Foundry's Agents API. The SDK
-        surface is evolving; operators may need to adjust based on their tenant's
-        actual API version. The plan documents this as "beta — needs live
-        validation against a real provisioned resource."
+        Requires: pip install talestogo[azure-foundry]
         """
         if not AZURE_AI_FOUNDRY_AVAILABLE:
             raise LLMConfigurationError(
                 "Azure AI Foundry SDK not installed. Run: "
-                "pip install talestogo[bing-grounded] (or "
-                "pip install azure-ai-projects azure-ai-agents azure-identity)"
+                "pip install talestogo[azure-foundry] (or "
+                "pip install azure-ai-projects azure-identity)"
             )
 
-        if not agent_id_or_deployment:
+        if not deployment_name:
             raise LLMConfigurationError(
-                "bing_grounded requires model_name to be set to the Azure AI Foundry "
-                "agent ID (the agent must have the Grounding-with-Bing-Search tool attached)"
+                "azure_foundry_agents requires model_name to be set to the "
+                "deployment name (e.g., 'gpt-4o')"
+            )
+
+        conn_name = bing_connection_name or os.getenv("AZURE_AI_BING_CONNECTION_NAME")
+        if not conn_name:
+            raise LLMConfigurationError(
+                "azure_foundry_agents requires bing_connection_name (or set "
+                "AZURE_AI_BING_CONNECTION_NAME env var) — the Foundry project "
+                "connection name for Grounding with Bing Search"
             )
 
         try:
-            # The endpoint here is the AI Foundry project endpoint, not an OpenAI
-            # deployment URL. Two auth paths are supported:
-            # - If AZURE_FOUNDRY_API_KEY is set (api_key non-empty), use
-            #   AzureKeyCredential — explicit key-based auth.
-            # - Otherwise fall back to DefaultAzureCredential, which auto-discovers
-            #   managed identity (when running on Azure), az-login, or the standard
-            #   AZURE_CLIENT_ID + AZURE_TENANT_ID + AZURE_CLIENT_SECRET service-
-            #   principal env vars.
-            if api_key:
-                credential = AzureKeyCredential(api_key)  # type: ignore[name-defined]
-            else:
-                credential = DefaultAzureCredential()  # type: ignore[name-defined]
-
-            credential_kwargs: Dict[str, Any] = {}
-            if api_version:
-                credential_kwargs["api_version"] = api_version
-            client = AIProjectClient(  # type: ignore[name-defined]
+            credential = DefaultAzureCredential()
+            project = AIProjectClient(
                 endpoint=api_endpoint,
                 credential=credential,
-                **credential_kwargs,
             )
 
-            # Run the configured agent with the user prompt. The Grounding-with-Bing
-            # tool is attached at agent-definition time (in Azure AI Foundry Studio),
-            # not per-call, so we only need to invoke the agent and read the response.
-            with client:
-                thread = client.agents.threads.create()
-                client.agents.messages.create(
-                    thread_id=thread.id, role="user", content=prompt
-                )
-                run = client.agents.runs.create_and_process(
-                    thread_id=thread.id, agent_id=agent_id_or_deployment
+            bing_conn = project.connections.get(conn_name)
+            bing_connection_id = bing_conn.id
+
+            agent_name = GenericLLMClient._get_or_create_bing_grounded_agent(
+                project, deployment_name, bing_connection_id
+            )
+
+            openai_client = project.get_openai_client()
+            response = openai_client.responses.create(
+                input=prompt,
+                tool_choice="required",
+                max_output_tokens=4000,
+                timeout=timeout,
+                extra_body={
+                    "agent_reference": {
+                        "name": agent_name,
+                        "type": "agent_reference",
+                    }
+                },
+            )
+
+            # Check for error/incomplete status before extracting text
+            resp_status = getattr(response, "status", None)
+            if resp_status and resp_status not in ("completed", None):
+                error_detail = getattr(response, "error", None) or "(no error detail)"
+                raise LLMAPIError(
+                    f"Azure AI Foundry Agents response did not complete "
+                    f"(status={resp_status!r}): {error_detail}"
                 )
 
-                # Check positively for completion. Any other status (failed,
-                # cancelled, expired, requires_action, …) means we shouldn't try
-                # to read messages — they'll be empty or stale.
-                run_status = getattr(run, "status", None)
-                if run_status != "completed":
-                    last_error = getattr(run, "last_error", None) or "(no error detail)"
-                    raise LLMAPIError(
-                        f"Azure AI Foundry agent run did not complete "
-                        f"(status={run_status!r}): {last_error}"
-                    )
+            if hasattr(response, "output_text") and response.output_text:
+                return response.output_text
 
-                # Read back the assistant's reply from the thread.
-                messages = list(client.agents.messages.list(thread_id=thread.id))
-                for msg in messages:
-                    if getattr(msg, "role", "") == "assistant":
-                        text_content = getattr(msg, "content", None)
-                        if isinstance(text_content, str):
-                            return text_content
-                        # Newer SDKs wrap content as a list of typed blocks.
-                        # Accumulate all non-empty text values rather than
-                        # returning the first one — longer responses (or runs
-                        # that interleave text with tool-call blocks) get split
-                        # across multiple blocks, and returning early truncates.
-                        if isinstance(text_content, list) and text_content:
-                            parts: List[str] = []
-                            for block in text_content:
-                                t = getattr(block, "text", None)
-                                if t is None:
-                                    continue
-                                # Only collect if we can extract real text —
-                                # don't fall back to str(t), which would
-                                # return a Python object repr, not the
-                                # message content.
-                                val = getattr(t, "value", None)
-                                if val:
-                                    parts.append(val)
-                            if parts:
-                                return "\n\n".join(parts)
-                return ""
+            # Fallback: iterate output items for message content
+            parts: List[str] = []
+            for item in getattr(response, "output", []):
+                content = getattr(item, "content", None)
+                if isinstance(content, list):
+                    for block in content:
+                        text = getattr(block, "text", None)
+                        if text:
+                            parts.append(text)
+            if parts:
+                return "\n\n".join(parts)
+
+            raise LLMAPIError(
+                "Azure AI Foundry Agents returned an empty response — the agent "
+                "produced no text output. This may indicate a content filter, "
+                "rate limit, or misconfigured agent."
+            )
+
         except LLMConfigurationError:
             raise
         except LLMAPIError:
             raise
         except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                "Azure AI Foundry Agents error (%s): %s", api_endpoint, e, exc_info=True
+            )
             raise LLMAPIError(
-                f"Azure AI Foundry (Grounding with Bing) error ({api_endpoint}): {str(e)}"
+                f"Azure AI Foundry Agents error: {type(e).__name__} — "
+                "check server logs for details"
             )
 
     @staticmethod
@@ -703,7 +801,8 @@ class GenericLLMClient:
         model_name: str,
         api_endpoint: Optional[str] = None,
         api_version: Optional[str] = None,
-        test_prompt: str = "Hello, please respond with a brief greeting."
+        test_prompt: str = "Hello, please respond with a brief greeting.",
+        bing_connection_name: Optional[str] = None,
     ) -> tuple[bool, str, Optional[str]]:
         """
         Test connection to an LLM provider.
@@ -715,23 +814,56 @@ class GenericLLMClient:
             api_endpoint: Custom endpoint URL (for openai_compatible / azure)
             api_version: api_version (azure only)
             test_prompt: The prompt to send for testing
+            bing_connection_name: Foundry project connection name (azure_foundry_agents)
 
         Returns:
             Tuple of (success: bool, message: str, response_preview: Optional[str])
         """
         try:
-            response = GenericLLMClient.call(
-                api_type=api_type,
-                api_key=api_key,
-                model_name=model_name,
-                prompt=test_prompt,
-                api_endpoint=api_endpoint,
-                api_version=api_version,
-                max_tokens=100,
-                temperature=0.7,
-                timeout=30.0  # Shorter timeout for testing
-            )
-            return True, "Connection successful", response[:200] if response else None
+            if api_type == "bing_v7":
+                if not api_endpoint:
+                    raise LLMConfigurationError(
+                        "api_endpoint is required for bing_v7 (e.g., 'https://api.bing.microsoft.com/')"
+                    )
+                results = GenericLLMClient._call_bing_v7_search(
+                    api_key=api_key,
+                    query="test",
+                    api_endpoint=api_endpoint,
+                    timeout=30.0,
+                    count=1,
+                )
+                preview = results[0]["snippet"][:200] if results else "(no results returned)"
+                return True, "Bing Search v7 connection successful", preview
+
+            elif api_type in ("azure_foundry_agents", "bing_grounded"):
+                if not api_endpoint:
+                    raise LLMConfigurationError(
+                        "api_endpoint (Azure AI Foundry project endpoint) is required for azure_foundry_agents"
+                    )
+                response = GenericLLMClient._call_azure_foundry_agents(
+                    api_key=api_key,
+                    deployment_name=model_name,
+                    prompt=test_prompt,
+                    api_endpoint=api_endpoint,
+                    api_version=api_version,
+                    timeout=60.0,
+                    bing_connection_name=bing_connection_name,
+                )
+                return True, "Azure AI Foundry Agents connection successful", response[:200] if response else None
+
+            else:
+                response = GenericLLMClient.call(
+                    api_type=api_type,
+                    api_key=api_key,
+                    model_name=model_name,
+                    prompt=test_prompt,
+                    api_endpoint=api_endpoint,
+                    api_version=api_version,
+                    max_tokens=100,
+                    temperature=0.7,
+                    timeout=30.0,
+                )
+                return True, "Connection successful", response[:200] if response else None
 
         except LLMConfigurationError as e:
             return False, f"Configuration error: {str(e)}", None

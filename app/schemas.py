@@ -40,6 +40,7 @@ class LLMProviderBase(BaseModel):
     api_endpoint: Optional[str] = None  # Custom endpoint for OpenAI-compatible / Azure resource URL
     env_var_name: Optional[str] = None  # Custom env var for non-default providers (e.g., "MISTRAL_API_KEY")
     api_version: Optional[str] = None  # Azure OpenAI api_version (e.g., "2024-10-21"); unused for other api_types
+    bing_connection_name: Optional[str] = None  # Foundry project connection name for Bing Grounding
     color: str = "#666666"  # Hex color for charts
     sort_order: int = 0  # Display order in UI
     is_enabled: bool = True  # Whether to collect from this LLM
@@ -61,6 +62,7 @@ class LLMProviderUpdate(BaseModel):
     model_name: Optional[str] = None
     env_var_name: Optional[str] = None  # Custom env var for non-default providers
     api_version: Optional[str] = None  # Azure OpenAI api_version
+    bing_connection_name: Optional[str] = None  # Foundry project connection name for Bing Grounding
     color: Optional[str] = None
     sort_order: Optional[int] = None
     is_enabled: Optional[bool] = None

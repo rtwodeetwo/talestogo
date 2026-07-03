@@ -82,6 +82,7 @@ def list_providers(
             "model_name": p.model_name,
             "env_var_name": p.env_var_name,
             "api_version": p.api_version,
+            "bing_connection_name": p.bing_connection_name,
             "color": p.color,
             "sort_order": p.sort_order,
             "is_enabled": p.is_enabled,
@@ -138,13 +139,17 @@ def create_provider(
     # Validate api_type
     valid_api_types = [
         "openai", "anthropic", "google", "openai_compatible", "azure",
-        "bing_v7", "bing_grounded",
+        "bing_v7", "bing_grounded", "azure_foundry_agents",
     ]
     if provider.api_type not in valid_api_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid api_type. Must be one of: {', '.join(valid_api_types)}"
         )
+
+    # Silently rewrite legacy "bing_grounded" to "azure_foundry_agents"
+    if provider.api_type == "bing_grounded":
+        provider.api_type = "azure_foundry_agents"
 
     # Require api_endpoint for openai_compatible
     if provider.api_type == "openai_compatible" and not provider.api_endpoint:
@@ -173,17 +178,23 @@ def create_provider(
             detail="api_endpoint (e.g., 'https://api.bing.microsoft.com/') is required for bing_v7"
         )
 
-    # Bing Grounded (Azure AI Foundry) needs the project endpoint + version.
-    if provider.api_type == "bing_grounded":
+    # Azure AI Foundry Agents requires project endpoint + model_name + bing_connection_name.
+    if provider.api_type == "azure_foundry_agents":
         if not provider.api_endpoint:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="api_endpoint (Azure AI Foundry project endpoint) is required for bing_grounded"
+                detail="api_endpoint (Azure AI Foundry project endpoint) is required for azure_foundry_agents"
             )
-        if not provider.api_version:
+        if not provider.model_name:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="api_version is required for bing_grounded (Azure AI Foundry API version)"
+                detail="model_name (deployment name) is required for azure_foundry_agents"
+            )
+        bing_conn = provider.bing_connection_name or os.getenv("AZURE_AI_BING_CONNECTION_NAME")
+        if not bing_conn:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="bing_connection_name is required for azure_foundry_agents (or set AZURE_AI_BING_CONNECTION_NAME env var)"
             )
 
     # If marked as the analysis provider, the provider must (a) be enabled — a
@@ -198,7 +209,7 @@ def create_provider(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A provider marked use_for_analysis=True must also be enabled.",
             )
-        if provider.api_type in ("bing_v7", "bing_grounded"):
+        if provider.api_type in ("bing_v7", "bing_grounded", "azure_foundry_agents"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -234,6 +245,7 @@ def create_provider(
         model_name=provider.model_name,
         env_var_name=provider.env_var_name,
         api_version=provider.api_version,
+        bing_connection_name=provider.bing_connection_name,
         color=provider.color,
         sort_order=provider.sort_order,
         is_enabled=provider.is_enabled,
@@ -329,13 +341,16 @@ def update_provider(
     if "api_type" in update_data:
         valid_api_types = [
             "openai", "anthropic", "google", "openai_compatible", "azure",
-            "bing_v7", "bing_grounded",
+            "bing_v7", "bing_grounded", "azure_foundry_agents",
         ]
         if update_data["api_type"] not in valid_api_types:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid api_type. Must be one of: {', '.join(valid_api_types)}"
             )
+        # Silently rewrite legacy "bing_grounded" to "azure_foundry_agents"
+        if update_data["api_type"] == "bing_grounded":
+            update_data["api_type"] = "azure_foundry_agents"
 
     # Validate the post-update api_type's requirements. Use the new field values
     # from update_data if present, otherwise fall back to the existing provider's
@@ -366,16 +381,25 @@ def update_provider(
             detail="api_endpoint is required for bing_v7"
         )
 
-    if effective_api_type == "bing_grounded":
+    if effective_api_type in ("azure_foundry_agents", "bing_grounded"):
         if not effective_endpoint:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="api_endpoint (Azure AI Foundry project endpoint) is required for bing_grounded"
+                detail="api_endpoint (Azure AI Foundry project endpoint) is required for azure_foundry_agents"
             )
-        if not effective_api_version:
+        effective_model = update_data.get("model_name", provider.model_name)
+        if not effective_model:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="api_version is required for bing_grounded"
+                detail="model_name (deployment name) is required for azure_foundry_agents"
+            )
+        effective_bing_conn = update_data.get(
+            "bing_connection_name", provider.bing_connection_name
+        ) or os.getenv("AZURE_AI_BING_CONNECTION_NAME")
+        if not effective_bing_conn:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="bing_connection_name is required for azure_foundry_agents (or set AZURE_AI_BING_CONNECTION_NAME env var)"
             )
 
     # Same analysis-provider invariants as create: must be enabled, and must
@@ -390,7 +414,7 @@ def update_provider(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A provider marked use_for_analysis=True must also be enabled.",
             )
-        if effective_api_type in ("bing_v7", "bing_grounded"):
+        if effective_api_type in ("bing_v7", "bing_grounded", "azure_foundry_agents"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -479,7 +503,7 @@ def test_provider(
     api_key = _get_api_key_for_provider(provider)
     env_var = _get_env_var_for_provider(provider)
 
-    if not api_key:
+    if not api_key and provider.api_type not in ("azure_foundry_agents", "bing_grounded"):
         return schemas.LLMProviderTestResponse(
             success=False,
             message=f"API key not found in environment variable: {env_var}",
@@ -495,7 +519,8 @@ def test_provider(
         model_name=provider.model_name,
         api_endpoint=provider.api_endpoint,
         api_version=provider.api_version,
-        test_prompt=test_prompt
+        test_prompt=test_prompt,
+        bing_connection_name=getattr(provider, "bing_connection_name", None),
     )
 
     return schemas.LLMProviderTestResponse(

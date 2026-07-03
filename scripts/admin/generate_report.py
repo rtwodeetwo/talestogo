@@ -112,7 +112,7 @@ def call_web_search_llm(
 
     for provider in web_search_providers:
         try:
-            if provider.api_type in ("google", "bing_grounded"):
+            if provider.api_type in ("google", "bing_grounded", "azure_foundry_agents"):
                 # Single-provider grounded calls. Bing-grounded uses an Azure AI
                 # Foundry agent that has the Grounding-with-Bing tool attached.
                 return provider.call_with_web_search(prompt=prompt)
