@@ -37,7 +37,7 @@ import logging
 from .database import SessionLocal
 from .models import ScheduledTask, ScheduledTaskHistory, User, BrandInfo, CollectionBatch
 from .services.site_config import get_site_url
-from .email import send_email
+from .services.email_notifications import send_email
 
 logger = logging.getLogger(__name__)
 

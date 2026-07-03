@@ -7,8 +7,11 @@ from sqlalchemy.orm import Session
 from typing import List
 from datetime import timedelta
 import datetime
+import logging
 import secrets
 import string
+
+logger = logging.getLogger(__name__)
 
 from .. import crud, models, schemas
 from ..database import get_db
@@ -182,7 +185,7 @@ async def send_invitation_email(
     Send invitation email to a user (admin only).
     Generates domain-specific email content.
     """
-    from ..email import send_email
+    from ..services.email_notifications import send_email
 
     # Get the user
     user = db.query(models.User).filter(models.User.id == user_id).first()
@@ -222,7 +225,14 @@ The Tales Team"""
     try:
         await send_email(user.email, subject, body)
         return {"message": f"Invitation email sent to {user.email}"}
+    except ValueError as e:
+        logger.warning(f"Email not configured, skipping invitation email: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Email service is not configured. User was created but no invitation email was sent."
+        )
     except Exception as e:
+        logger.error(f"Failed to send invitation email to {user.email}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send email: {str(e)}"

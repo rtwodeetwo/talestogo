@@ -8,7 +8,6 @@ WORKFLOW:
 """
 import os
 import subprocess
-import asyncio
 import threading
 from datetime import datetime
 from typing import Optional
@@ -16,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app import models
-from app.email import send_email
+from app.services.email_notifications import send_email_sync
 from app.services.site_config import get_site_url, get_site_name, get_admin_email
 
 
@@ -822,7 +821,7 @@ Best regards,
 The {site_name} Team"""
 
             # Send the email
-            asyncio.run(send_email(user_obj.email, subject, body))
+            send_email_sync(user_obj.email, subject, body)
 
         except subprocess.TimeoutExpired as e:
             # Timeout - mark task as failed

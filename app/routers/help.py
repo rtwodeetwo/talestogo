@@ -9,7 +9,7 @@ import logging
 from ..database import get_db
 from ..models import User
 from ..auth import get_current_user
-from ..email import send_email
+from ..services.email_notifications import send_email
 from ..services.site_config import get_site_name, get_admin_email
 
 logger = logging.getLogger(__name__)
