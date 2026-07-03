@@ -1,5 +1,5 @@
 [project]
-name = "tales_project"
+name = "talestogo"
 version = "0.1.0"
 
 # Optional dependencies — install with: pip install .[<extra>]
@@ -21,6 +21,15 @@ azure-foundry = [
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests*"]
+
+# Pytest configuration.
+#
+# Restrict collection to the tests/ suite. Without this, a bare `pytest`
+# invocation also tries to import standalone scripts under scripts/testing/
+# (e.g. test_api_reports.py), which call exit(1) at import time and crash
+# collection. The real suite lives entirely in tests/.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 # Bandit (Python SAST) configuration.
 #
