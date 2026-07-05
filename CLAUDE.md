@@ -155,13 +155,33 @@ Phase 6.3 on `strip-to-tales-only` migrated all three files, but `generic_llm_cl
 
 **Also fixed:** Migrated `app/services/llm_service.py` from deprecated `google.generativeai` to new `google.genai` client SDK (same migration previously done in `generic_llm_client.py`).
 
+### Session 3: 2026-07-05 — Web search grounding for all providers + latest models
+
+Merged via [PR #15](https://github.com/rtwodeetwo/talestogo/pull/15) (branch `feature/web-search-grounding` → `main`, merge commit `376e9d13`).
+
+**Goal:** collect responses with fresh web search grounding on every AI platform, and query each provider's latest flagship model, so Tales reflects what real users see in the consumer apps rather than stale training data.
+
+**What changed:**
+
+- **`app/services/generic_llm_client.py`** — added grounded call paths for OpenAI (`_call_openai_with_web_search`, Responses API `web_search` tool) and Anthropic (`_call_anthropic_with_web_search`, server-side `web_search` tool; concatenates the multiple content blocks a grounded response returns instead of reading `content[0]`). Threaded `max_tokens`/`temperature` through the Google and Perplexity grounded paths. Added `_anthropic_rejects_sampling` / `_openai_rejects_sampling` helpers so the call paths adapt to modern models: Claude Opus 4.7/4.8 + Sonnet 5 and OpenAI GPT-5 reject `temperature` (400), and GPT-5 needs `max_completion_tokens`. This keeps both collection and the admin Test Connection button working on new and old models.
+- **`app/services/llm_provider_manager.py`** — `supports_web_search=True` on all four `DEFAULT_PROVIDERS`; models bumped to each provider's latest GA flagship: ChatGPT `gpt-5.5`, Claude `claude-opus-4-8`, Gemini `gemini-3.5-flash`, Perplexity `sonar-pro`. (GPT-5.6 was limited-preview only at the time.)
+- **`scripts/admin/collect_responses.py`** — `query_with_provider` routes to `call_with_web_search` when `supports_web_search` is set, with an ungrounded fallback if the api_type can't ground.
+- **`generate_report.py`** — unchanged; its web-search loop already safely skips the newly-grounded `openai`/`anthropic` types.
+- Documented the switch, the DB opt-in, and the trend-line comparability break in the **LLM Configuration** section above.
+
+**Deploy note:** grounding is gated per provider on the `supports_web_search` DB flag. Fresh deployments (empty `llm_providers` table) get it from `DEFAULT_PROVIDERS` automatically; existing deployments must run `UPDATE llm_providers SET supports_web_search = true WHERE provider_key IN ('chatgpt','claude','gemini','perplexity')`. Enabling grounding is a **structural break in all trend lines** — annotate the switch date; expect auto-investigations to fire on the first grounded batch.
+
+**Verification:** 96/96 tests pass. SAST clean — bandit 0 High / 0 Medium (16 B608 false positives in admin/migration scripts annotated `# nosec`), pip-audit 0, npm audit 0, semgrep run as a second engine (26 findings, all triaged as false positives already mitigated by whitelist validation / bound parameters). Grounded API round-trips were not exercised locally (need live API keys); the SDK surfaces (`responses.create`, Anthropic server tools, `google-genai` grounding `Tool`) were verified present.
+
+**Follow-up:** drafted a PNNL/labs update email describing the grounding switch, the latest models, the DB opt-in, and the comparability caveat (not yet sent).
+
 ### NEXT SESSION
 
-Phase 8 complete — branch merged to main. Repo is live and PNNL-ready.
+Web search grounding + latest models merged to `main` (PR #15). PNNL/labs update email drafted, awaiting recipients + send from Rachel's work account.
 
 ### Outstanding follow-ups (outside this branch)
 
-- **Reply to Ross Lanes (PNNL)** with the GitHub URL and offer to add him + Domenic Skurka as collaborators (draft is in earlier conversation, not yet sent)
+- **Send the PNNL/labs update email** about the web-search-grounding change (drafted this session; needs recipient addresses + the second lab's name; send from `rkremen@pppl.gov`, not the connected personal Gmail). The repo is **public**, so no collaborator setup is needed — the GitHub URL just works.
 - **Add LICENSE to `tales_project`** if Rachel wants the same MIT license there (separate task, separate repo)
 - **Remove "Generate Report All Data" button from `tales_project`** if Rachel wants it gone from production (separate task, separate repo)
 - **Consider GitHub repo description / contributing guidelines** before PNNL clones
