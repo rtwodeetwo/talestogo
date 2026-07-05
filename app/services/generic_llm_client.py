@@ -311,8 +311,7 @@ class GenericLLMClient:
             raise LLMConfigurationError("OpenAI SDK not installed. Run: pip install openai")
 
         try:
-            http_client = httpx.Client(timeout=timeout)
-            client = OpenAI(api_key=api_key, http_client=http_client)
+            client = OpenAI(api_key=api_key, timeout=timeout)
 
             kwargs: Dict[str, Any] = {
                 "model": model_name,
@@ -353,8 +352,7 @@ class GenericLLMClient:
             raise LLMConfigurationError("OpenAI SDK not installed. Run: pip install openai")
 
         try:
-            http_client = httpx.Client(timeout=timeout)
-            client = OpenAI(api_key=api_key, http_client=http_client)
+            client = OpenAI(api_key=api_key, timeout=timeout)
 
             def _create(tool_type: str):
                 kwargs: Dict[str, Any] = {
@@ -370,9 +368,13 @@ class GenericLLMClient:
 
             try:
                 response = _create("web_search")
-            except Exception:
-                # Older SDK/model surfaces name the tool "web_search_preview".
-                response = _create("web_search_preview")
+            except Exception as e:
+                import openai
+                if isinstance(e, openai.BadRequestError):
+                    # Older SDK/model surfaces name the tool "web_search_preview".
+                    response = _create("web_search_preview")
+                else:
+                    raise
 
             text = getattr(response, "output_text", None)
             if not text:
@@ -454,9 +456,12 @@ class GenericLLMClient:
             try:
                 # Current tool version (dynamic filtering) on Opus 4.6+/Sonnet 4.6+.
                 message = _create("web_search_20260209")
-            except Exception:
-                # Older models only support the basic web_search tool.
-                message = _create("web_search_20250305")
+            except Exception as e:
+                if isinstance(e, anthropic.BadRequestError):
+                    # Older models only support the basic web_search tool.
+                    message = _create("web_search_20250305")
+                else:
+                    raise
 
             text = "".join(
                 b.text for b in message.content
@@ -530,6 +535,9 @@ class GenericLLMClient:
                     tools=[search_tool],
                     max_output_tokens=max_tokens,
                     temperature=temperature,
+                    http_options=google_genai_types.HttpOptions(
+                        timeout=int(timeout * 1000)
+                    ),
                 ),
             )
             return response.text
@@ -953,11 +961,10 @@ class GenericLLMClient:
             raise LLMConfigurationError("OpenAI SDK not installed. Run: pip install openai")
 
         try:
-            http_client = httpx.Client(timeout=timeout)
             client = OpenAI(
                 api_key=api_key,
                 base_url=api_endpoint,
-                http_client=http_client
+                timeout=timeout,
             )
 
             response = client.chat.completions.create(
