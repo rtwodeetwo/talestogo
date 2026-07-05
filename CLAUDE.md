@@ -254,6 +254,44 @@ Tales supports up to 6 LLM providers for data collection and analysis:
 - **Perplexity** - via `PERPLEXITY_API_KEY` (supports web search)
 - Up to 2 custom OpenAI-compatible providers
 
+### Web search grounding (all providers, as of 2026-07-05)
+
+All four default providers now collect responses with **fresh web search grounding
+enabled**, so answers reflect what real users see in the consumer apps (which
+search the web) rather than the model's stale training data. Grounding is used
+for regular data collection, not just the State-of-the-LLMs report section.
+
+- ChatGPT grounds via the OpenAI Responses API `web_search` tool.
+- Claude grounds via the Anthropic server-side `web_search` tool.
+- Gemini grounds via Google Search grounding.
+- Perplexity `sonar-pro` searches natively.
+
+Grounding is gated per-provider on the `supports_web_search` flag. For the built-in
+`DEFAULT_PROVIDERS` (used when the `llm_providers` table is empty) it is on for all
+four. **Deployments that already have `llm_providers` DB rows must opt in explicitly:**
+
+```sql
+SELECT provider_key, model_name, is_enabled, supports_web_search FROM llm_providers;
+UPDATE llm_providers SET supports_web_search = true
+ WHERE provider_key IN ('chatgpt', 'claude', 'gemini', 'perplexity');
+```
+
+The flag is also the per-provider off-switch if grounded collection misbehaves.
+
+**Default models (latest generally-available flagship per provider, July 2026):**
+ChatGPT `gpt-5.5`, Claude `claude-opus-4-8`, Gemini `gemini-3.5-flash`,
+Perplexity `sonar-pro`. Note: modern Claude (Opus 4.7/4.8, Sonnet 5) and OpenAI
+GPT-5 models reject `temperature` (and GPT-5 needs `max_completion_tokens`); the
+call paths in `generic_llm_client.py` adapt to the configured model, so admins
+can still set an older model that accepts sampling params.
+
+**⚠️ Data comparability:** enabling grounding is a **structural break in every trend
+line** (mention rate, sentiment, share of voice) at the first grounded batch — the
+data before and after is not directly comparable. Annotate this break in monthly/
+quarterly analyses. Expect auto-triggered investigations to fire on the first
+grounded batch (mention-rate deltas exceed thresholds); that is expected, not a bug.
+The closed-book (training-data-only) signal is no longer collected from this date.
+
 ## Development Commands
 
 ```bash

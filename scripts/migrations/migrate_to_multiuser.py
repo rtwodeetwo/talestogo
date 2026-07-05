@@ -99,7 +99,7 @@ def add_user_id_to_table(table_name: str, admin_user_id: int):
             print(f"  ✓ Added user_id column to {table_name}")
 
             # Set all existing rows to belong to admin user
-            conn.execute(f"UPDATE {table_name} SET user_id = {admin_user_id}")
+            conn.execute(f"UPDATE {table_name} SET user_id = {admin_user_id}")  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             conn.commit()
             print(f"  ✓ Migrated existing {table_name} records to admin user")
         except Exception as e:

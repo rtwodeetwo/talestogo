@@ -65,6 +65,35 @@ class LLMAPIError(LLMClientError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Model capability helpers
+#
+# Modern Anthropic (Opus 4.7/4.8, Sonnet 5, Fable/Mythos 5) and OpenAI GPT-5 /
+# o-series "reasoning" models REJECT non-default sampling parameters
+# (temperature/top_p/top_k) with a 400 error, and GPT-5-family Chat Completions
+# calls require `max_completion_tokens` instead of `max_tokens`. These helpers
+# let the call paths adapt to the configured model instead of hard-failing when
+# a deployment upgrades to a current flagship model.
+# ---------------------------------------------------------------------------
+_ANTHROPIC_NO_SAMPLING_MARKERS = (
+    "opus-4-7", "opus-4-8", "sonnet-5", "fable-5", "mythos-5",
+)
+_OPENAI_NO_SAMPLING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _anthropic_rejects_sampling(model_name: str) -> bool:
+    """True if the Anthropic model 400s on temperature/top_p/top_k."""
+    m = (model_name or "").lower()
+    return any(marker in m for marker in _ANTHROPIC_NO_SAMPLING_MARKERS)
+
+
+def _openai_rejects_sampling(model_name: str) -> bool:
+    """True if the OpenAI model is a reasoning model (no sampling params;
+    uses max_completion_tokens instead of max_tokens)."""
+    m = (model_name or "").lower()
+    return any(m.startswith(prefix) for prefix in _OPENAI_NO_SAMPLING_PREFIXES)
+
+
 class GenericLLMClient:
     """
     Generic client for calling different LLM APIs.
@@ -167,13 +196,23 @@ class GenericLLMClient:
         api_endpoint: Optional[str] = None,
         api_version: Optional[str] = None,
         analysis_provider: Optional[Any] = None,
+        max_tokens: int = 4000,
+        temperature: float = 0.7,
         timeout: float = DEFAULT_TIMEOUT,
         bing_connection_name: Optional[str] = None,
     ) -> str:
         """
-        Call an LLM API with web search grounding (for State of the LLMs feature).
+        Call an LLM API with fresh web search grounding.
+
+        Used for regular data collection (so responses reflect what real users
+        see in the consumer apps, not stale training data) and the State of the
+        LLMs report feature.
 
         Supported api_types:
+        - "openai": ChatGPT via the Responses API with the built-in web_search
+          tool (the model decides per-query whether to search, matching consumer
+          ChatGPT).
+        - "anthropic": Claude with the server-side web_search tool.
         - "google": Gemini + Google Search grounding (single round-trip)
         - "openai_compatible" with Perplexity sonar: built-in web search
         - "bing_v7": Bing Search v7 REST retrieval, synthesized by analysis_provider
@@ -183,8 +222,8 @@ class GenericLLMClient:
           Auth via DefaultAzureCredential (no API key). Requires azure-foundry extra.
 
         Args:
-            api_type: One of "google", "openai_compatible", "bing_v7",
-                "azure_foundry_agents", "bing_grounded"
+            api_type: One of "openai", "anthropic", "google", "openai_compatible",
+                "bing_v7", "azure_foundry_agents", "bing_grounded"
             api_key: The decrypted API key (unused for azure_foundry_agents)
             model_name: Provider-specific identifier (model / deployment name)
             prompt: The prompt to send
@@ -192,6 +231,8 @@ class GenericLLMClient:
             api_version: Unused for azure_foundry_agents (kept for interface compat)
             analysis_provider: ProviderConfig used to synthesize Bing v7 search
                 results. Required when api_type=="bing_v7". Ignored otherwise.
+            max_tokens: Maximum tokens in response (ignored for bing_v7)
+            temperature: Sampling temperature (ignored where the model rejects it)
             timeout: Request timeout in seconds
             bing_connection_name: Foundry project connection name for Bing Grounding
                 (azure_foundry_agents only). Falls back to AZURE_AI_BING_CONNECTION_NAME env var.
@@ -204,9 +245,17 @@ class GenericLLMClient:
                 if required configuration is missing.
             LLMAPIError: If the upstream API call fails.
         """
-        if api_type == "google":
+        if api_type == "openai":
+            return GenericLLMClient._call_openai_with_web_search(
+                api_key, model_name, prompt, max_tokens, temperature, timeout
+            )
+        elif api_type == "anthropic":
+            return GenericLLMClient._call_anthropic_with_web_search(
+                api_key, model_name, prompt, max_tokens, temperature, timeout
+            )
+        elif api_type == "google":
             return GenericLLMClient._call_google_with_grounding(
-                api_key, model_name, prompt, timeout
+                api_key, model_name, prompt, max_tokens, temperature, timeout
             )
         elif api_type == "openai_compatible":
             if not api_endpoint:
@@ -214,7 +263,7 @@ class GenericLLMClient:
                     "api_endpoint is required for openai_compatible API type"
                 )
             return GenericLLMClient._call_openai_compatible(
-                api_key, model_name, prompt, api_endpoint, max_tokens=4000, temperature=0.7, timeout=timeout
+                api_key, model_name, prompt, api_endpoint, max_tokens=max_tokens, temperature=temperature, timeout=timeout
             )
         elif api_type == "bing_v7":
             if not api_endpoint:
@@ -242,9 +291,10 @@ class GenericLLMClient:
         else:
             raise LLMConfigurationError(
                 f"API type '{api_type}' does not support web search. "
-                "Web search is provided by: 'google' (Gemini grounding), 'openai_compatible' "
-                "(Perplexity sonar), 'bing_v7' (Bing Search v7 + analysis LLM), "
-                "or 'azure_foundry_agents' (Azure AI Foundry Grounding with Bing)."
+                "Web search is provided by: 'openai' (ChatGPT Responses API), "
+                "'anthropic' (Claude web_search tool), 'google' (Gemini grounding), "
+                "'openai_compatible' (Perplexity sonar), 'bing_v7' (Bing Search v7 + "
+                "analysis LLM), or 'azure_foundry_agents' (Azure AI Foundry Grounding with Bing)."
             )
 
     @staticmethod
@@ -264,16 +314,77 @@ class GenericLLMClient:
             http_client = httpx.Client(timeout=timeout)
             client = OpenAI(api_key=api_key, http_client=http_client)
 
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
+            kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            # GPT-5 / o-series reasoning models reject `max_tokens` (use
+            # `max_completion_tokens`) and reject non-default `temperature`.
+            if _openai_rejects_sampling(model_name):
+                kwargs["max_completion_tokens"] = max_tokens
+            else:
+                kwargs["max_tokens"] = max_tokens
+                kwargs["temperature"] = temperature
+
+            response = client.chat.completions.create(**kwargs)
             return response.choices[0].message.content
 
         except Exception as e:
             raise LLMAPIError(f"OpenAI API error: {str(e)}")
+
+    @staticmethod
+    def _call_openai_with_web_search(
+        api_key: str,
+        model_name: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        timeout: float
+    ) -> str:
+        """Call OpenAI (ChatGPT) with web search grounding via the Responses API.
+
+        The Responses API lets a standard model decide per-query whether to
+        search — matching consumer ChatGPT — unlike Chat Completions web search,
+        which requires dedicated *-search-preview models that search on every
+        query. Note the Responses API renames: `input` (not messages),
+        `max_output_tokens` (not max_tokens), `response.output_text`.
+        """
+        if not OPENAI_AVAILABLE:
+            raise LLMConfigurationError("OpenAI SDK not installed. Run: pip install openai")
+
+        try:
+            http_client = httpx.Client(timeout=timeout)
+            client = OpenAI(api_key=api_key, http_client=http_client)
+
+            def _create(tool_type: str):
+                kwargs: Dict[str, Any] = {
+                    "model": model_name,
+                    "input": prompt,
+                    "tools": [{"type": tool_type}],
+                    "max_output_tokens": max_tokens,
+                }
+                # Reasoning models (GPT-5 / o-series) reject non-default temperature.
+                if not _openai_rejects_sampling(model_name):
+                    kwargs["temperature"] = temperature
+                return client.responses.create(**kwargs)
+
+            try:
+                response = _create("web_search")
+            except Exception:
+                # Older SDK/model surfaces name the tool "web_search_preview".
+                response = _create("web_search_preview")
+
+            text = getattr(response, "output_text", None)
+            if not text:
+                raise LLMAPIError(
+                    "OpenAI Responses API returned no text output (with web search)."
+                )
+            return text
+
+        except LLMAPIError:
+            raise
+        except Exception as e:
+            raise LLMAPIError(f"OpenAI API (with web search) error: {str(e)}")
 
     @staticmethod
     def _call_anthropic(
@@ -291,16 +402,76 @@ class GenericLLMClient:
         try:
             client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
 
-            message = client.messages.create(
-                model=model_name,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            # Modern Claude models (Opus 4.7/4.8, Sonnet 5, Fable/Mythos 5) 400
+            # on temperature/top_p/top_k.
+            if not _anthropic_rejects_sampling(model_name):
+                kwargs["temperature"] = temperature
+
+            message = client.messages.create(**kwargs)
             return message.content[0].text
 
         except Exception as e:
             raise LLMAPIError(f"Anthropic API error: {str(e)}")
+
+    @staticmethod
+    def _call_anthropic_with_web_search(
+        api_key: str,
+        model_name: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        timeout: float
+    ) -> str:
+        """Call Anthropic (Claude) with the server-side web search tool.
+
+        The model decides per-query whether to search, matching consumer Claude.
+        `max_uses` caps cost. Grounded responses contain MULTIPLE content blocks
+        (server_tool_use, web_search_tool_result, text, ...), so the text blocks
+        must be concatenated — reading content[0].text would break.
+        """
+        if not ANTHROPIC_AVAILABLE:
+            raise LLMConfigurationError("Anthropic SDK not installed. Run: pip install anthropic")
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
+
+            def _create(tool_type: str):
+                kwargs: Dict[str, Any] = {
+                    "model": model_name,
+                    "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "tools": [{"type": tool_type, "name": "web_search", "max_uses": 3}],
+                }
+                if not _anthropic_rejects_sampling(model_name):
+                    kwargs["temperature"] = temperature
+                return client.messages.create(**kwargs)
+
+            try:
+                # Current tool version (dynamic filtering) on Opus 4.6+/Sonnet 4.6+.
+                message = _create("web_search_20260209")
+            except Exception:
+                # Older models only support the basic web_search tool.
+                message = _create("web_search_20250305")
+
+            text = "".join(
+                b.text for b in message.content
+                if getattr(b, "type", None) == "text"
+            )
+            if not text.strip():
+                raise LLMAPIError(
+                    "Anthropic returned no text output (with web search)."
+                )
+            return text
+
+        except LLMAPIError:
+            raise
+        except Exception as e:
+            raise LLMAPIError(f"Anthropic API (with web search) error: {str(e)}")
 
     @staticmethod
     def _call_google(
@@ -337,7 +508,9 @@ class GenericLLMClient:
         api_key: str,
         model_name: str,
         prompt: str,
-        timeout: float
+        max_tokens: int = 4000,
+        temperature: float = 0.7,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> str:
         """Call Google GenAI API with Google Search grounding (for web search)."""
         if not GOOGLE_AVAILABLE:
@@ -353,7 +526,11 @@ class GenericLLMClient:
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
-                config=google_genai_types.GenerateContentConfig(tools=[search_tool]),
+                config=google_genai_types.GenerateContentConfig(
+                    tools=[search_tool],
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                ),
             )
             return response.text
 

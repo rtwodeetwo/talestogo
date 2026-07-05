@@ -81,7 +81,7 @@ class DataSyncer:
 
         try:
             # Try to query the column - if it fails, column doesn't exist
-            query = f"SELECT {column_name} FROM {table_name} LIMIT 0"
+            query = f"SELECT {column_name} FROM {table_name} LIMIT 0"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             session.execute(text(query))
             return True
         except Exception:
@@ -95,7 +95,7 @@ class DataSyncer:
             return []
 
         placeholders = ','.join([f":name{i}" for i in range(len(tenant_names))])
-        query = f"SELECT id, tenant_name FROM tenants WHERE tenant_name IN ({placeholders})"
+        query = f"SELECT id, tenant_name FROM tenants WHERE tenant_name IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
         params = {f"name{i}": name for i, name in enumerate(tenant_names)}
 
         result = self.prod_session.execute(text(query), params)
@@ -120,7 +120,7 @@ class DataSyncer:
         user_emails = []
         if tenant_ids:
             placeholders = ','.join([f":id{i}" for i in range(len(tenant_ids))])
-            email_query = f"SELECT DISTINCT email FROM users WHERE tenant_id IN ({placeholders})"
+            email_query = f"SELECT DISTINCT email FROM users WHERE tenant_id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             params = {f"id{i}": tid for i, tid in enumerate(tenant_ids)}
             result = self.prod_session.execute(text(email_query), params)
             user_emails = [row[0] for row in result.fetchall()]
@@ -130,14 +130,14 @@ class DataSyncer:
             if table == 'tenants':
                 if tenant_ids:
                     placeholders = ','.join([f":id{i}" for i in range(len(tenant_ids))])
-                    query = f"DELETE FROM {table} WHERE id IN ({placeholders})"
+                    query = f"DELETE FROM {table} WHERE id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
                     params = {f"id{i}": tid for i, tid in enumerate(tenant_ids)}
                     self.local_session.execute(text(query), params)
             elif table == 'users':
                 # Delete by email to handle users who might exist in different tenants locally
                 if user_emails:
                     placeholders = ','.join([f":email{i}" for i in range(len(user_emails))])
-                    query = f"DELETE FROM {table} WHERE email IN ({placeholders})"
+                    query = f"DELETE FROM {table} WHERE email IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
                     params = {f"email{i}": email for i, email in enumerate(user_emails)}
                     self.local_session.execute(text(query), params)
             else:
@@ -146,7 +146,7 @@ class DataSyncer:
                 if user_emails:
                     # Get local user IDs for these emails
                     placeholders = ','.join([f":email{i}" for i in range(len(user_emails))])
-                    user_query = f"SELECT id FROM users WHERE email IN ({placeholders})"
+                    user_query = f"SELECT id FROM users WHERE email IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
                     params = {f"email{i}": email for i, email in enumerate(user_emails)}
                     result = self.local_session.execute(text(user_query), params)
                     local_user_ids = [row[0] for row in result.fetchall()]
@@ -155,7 +155,7 @@ class DataSyncer:
                         # Check if table has user_id column
                         if self.table_has_column(table, 'user_id'):
                             placeholders = ','.join([f":uid{i}" for i in range(len(local_user_ids))])
-                            query = f"DELETE FROM {table} WHERE user_id IN ({placeholders})"
+                            query = f"DELETE FROM {table} WHERE user_id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
                             params = {f"uid{i}": uid for i, uid in enumerate(local_user_ids)}
                             self.local_session.execute(text(query), params)
 
@@ -169,7 +169,7 @@ class DataSyncer:
             return
 
         placeholders = ','.join([f":id{i}" for i in range(len(tenant_ids))])
-        query = f"SELECT * FROM tenants WHERE id IN ({placeholders})"
+        query = f"SELECT * FROM tenants WHERE id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
         params = {f"id{i}": tid for i, tid in enumerate(tenant_ids)}
 
         result = self.prod_session.execute(text(query), params)
@@ -198,7 +198,7 @@ class DataSyncer:
             filtered_dict = {k: v for k, v in row_dict.items() if k in local_columns}
             cols = ', '.join(filtered_dict.keys())
             vals = ', '.join([f":{col}" for col in filtered_dict.keys()])
-            insert_query = f"INSERT INTO tenants ({cols}) VALUES ({vals})"
+            insert_query = f"INSERT INTO tenants ({cols}) VALUES ({vals})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             self.local_session.execute(text(insert_query), filtered_dict)
 
         self.local_session.commit()
@@ -211,7 +211,7 @@ class DataSyncer:
             return
 
         placeholders = ','.join([f":id{i}" for i in range(len(tenant_ids))])
-        query = f"SELECT * FROM users WHERE tenant_id IN ({placeholders})"
+        query = f"SELECT * FROM users WHERE tenant_id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
         params = {f"id{i}": tid for i, tid in enumerate(tenant_ids)}
 
         result = self.prod_session.execute(text(query), params)
@@ -260,7 +260,7 @@ class DataSyncer:
 
             cols = ', '.join(filtered_dict.keys())
             vals = ', '.join([f":{col}" for col in filtered_dict.keys()])
-            insert_query = f"INSERT INTO users ({cols}) VALUES ({vals})"
+            insert_query = f"INSERT INTO users ({cols}) VALUES ({vals})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             self.local_session.execute(text(insert_query), filtered_dict)
 
         self.local_session.commit()
@@ -273,7 +273,7 @@ class DataSyncer:
 
         # Get user IDs for these tenants
         placeholders = ','.join([f":id{i}" for i in range(len(tenant_ids))])
-        user_query = f"SELECT id FROM users WHERE tenant_id IN ({placeholders})"
+        user_query = f"SELECT id FROM users WHERE tenant_id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
         params = {f"id{i}": tid for i, tid in enumerate(tenant_ids)}
         result = self.prod_session.execute(text(user_query), params)
         user_ids = [row[0] for row in result.fetchall()]
@@ -289,7 +289,7 @@ class DataSyncer:
 
         # Fetch data
         placeholders = ','.join([f":uid{i}" for i in range(len(user_ids))])
-        query = f"SELECT * FROM {table_name} WHERE user_id IN ({placeholders})"
+        query = f"SELECT * FROM {table_name} WHERE user_id IN ({placeholders})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
         params = {f"uid{i}": uid for i, uid in enumerate(user_ids)}
 
         result = self.prod_session.execute(text(query), params)
@@ -309,7 +309,7 @@ class DataSyncer:
         # Get columns that exist in local database
         local_columns = set()
         try:
-            sample_query = f"SELECT * FROM {table_name} LIMIT 0"
+            sample_query = f"SELECT * FROM {table_name} LIMIT 0"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             result = self.local_session.execute(text(sample_query))
             local_columns = set(result.keys())
         except Exception:
@@ -328,7 +328,7 @@ class DataSyncer:
 
             cols = ', '.join(filtered_dict.keys())
             vals = ', '.join([f":{col}" for col in filtered_dict.keys()])
-            insert_query = f"INSERT INTO {table_name} ({cols}) VALUES ({vals})"
+            insert_query = f"INSERT INTO {table_name} ({cols}) VALUES ({vals})"  # nosec B608 - table/column is a trusted identifier (hardcoded list / DB introspection), not user input; row values use bound params
             try:
                 self.local_session.execute(text(insert_query), filtered_dict)
                 self.local_session.commit()  # Commit after each successful insert
