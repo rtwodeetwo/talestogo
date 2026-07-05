@@ -106,10 +106,23 @@ class ResponseCollector:
         """
         Query an LLM using the GenericLLMClient with a configured provider.
 
-        This method uses the new configurable LLM system instead of hardcoded clients.
+        Providers flagged supports_web_search collect with fresh web search
+        grounding so responses reflect what real users see in the consumer apps,
+        not stale training data. Grounded answers cite recent events and are
+        longer, so we give them a larger token budget. If a provider is flagged
+        for web search but its api_type doesn't actually support grounding, we
+        fall back to an ungrounded call rather than failing the query.
         """
         try:
-            response_text = provider.call(query_text, max_tokens=1000, temperature=0.7)
+            if provider.supports_web_search:
+                try:
+                    response_text = provider.call_with_web_search(
+                        query_text, max_tokens=4096, temperature=0.7
+                    )
+                except LLMConfigurationError:
+                    response_text = provider.call(query_text, max_tokens=1000, temperature=0.7)
+            else:
+                response_text = provider.call(query_text, max_tokens=1000, temperature=0.7)
             return response_text
         except LLMAPIError as e:
             error_msg = f"{provider.display_name} API error: {str(e)}"

@@ -99,13 +99,18 @@ class ProviderConfig:
         self,
         prompt: str,
         analysis_provider: Optional["ProviderConfig"] = None,
+        max_tokens: int = 4000,
+        temperature: float = 0.7,
     ) -> str:
-        """Call this provider with web search grounding.
+        """Call this provider with fresh web search grounding.
 
         For api_type=="bing_v7", an `analysis_provider` is required — Bing v7
         retrieves search results but does NOT synthesize them; the analysis
         provider writes the prose from those results. Other web-search
         api_types ignore the parameter.
+
+        max_tokens / temperature are optional so existing callers keep their
+        defaults; they are ignored where the model or api_type rejects them.
         """
         api_key = self._get_api_key()
         if not api_key and self.api_type not in ("azure_foundry_agents", "bing_grounded"):
@@ -120,36 +125,42 @@ class ProviderConfig:
             api_endpoint=self.api_endpoint,
             api_version=self.api_version,
             analysis_provider=analysis_provider,
+            max_tokens=max_tokens,
+            temperature=temperature,
             bing_connection_name=self.bing_connection_name,
         )
 
 
 # Default provider configurations
 # Used when no LLMProvider records exist in the database
+# All four default providers collect with fresh web search grounding enabled so
+# responses reflect what real users see in the consumer apps (which search the
+# web) rather than stale training data. Model names track each provider's latest
+# generally-available flagship as of July 2026.
 DEFAULT_PROVIDERS = [
     {
         "provider_key": "chatgpt",
         "display_name": "ChatGPT",
         "api_type": "openai",
-        "model_name": "gpt-4o",
+        "model_name": "gpt-5.5",
         "color": "#10A37F",
         "sort_order": 0,
-        "supports_web_search": False,
+        "supports_web_search": True,
     },
     {
         "provider_key": "claude",
         "display_name": "Claude",
         "api_type": "anthropic",
-        "model_name": "claude-haiku-4-5-20251001",
+        "model_name": "claude-opus-4-8",
         "color": "#CC785C",
         "sort_order": 1,
-        "supports_web_search": False,
+        "supports_web_search": True,
     },
     {
         "provider_key": "gemini",
         "display_name": "Gemini",
         "api_type": "google",
-        "model_name": "gemini-2.5-flash",
+        "model_name": "gemini-3.5-flash",
         "color": "#4285F4",
         "sort_order": 2,
         "supports_web_search": True,
@@ -160,7 +171,7 @@ DEFAULT_PROVIDERS = [
         "display_name": "Perplexity",
         "api_type": "openai_compatible",
         "api_endpoint": "https://api.perplexity.ai",
-        "model_name": "sonar",
+        "model_name": "sonar-pro",
         "color": "#1FB8CD",
         "sort_order": 3,
         "supports_web_search": True,
