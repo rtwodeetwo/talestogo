@@ -2,10 +2,16 @@
 Authentication Router
 Handles user registration, login (email/password, Google, Microsoft OAuth), and profile management
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+import os
+import secrets
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import timedelta, datetime
 from typing import List
+import requests as http_requests
 
 from .. import crud, models, schemas
 from ..database import get_db
@@ -22,9 +28,13 @@ from ..auth import (
     ENABLE_MICROSOFT_AUTH,
     ENABLE_GOOGLE_AUTH,
     MICROSOFT_CLIENT_ID,
+    MICROSOFT_CLIENT_SECRET,
     GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
     OIDC_DISCOVERY_URL,
+    AUTH_FLOW_TYPE,
 )
+from ..services.site_config import get_site_url
 
 router = APIRouter(
     prefix="/auth",
@@ -56,6 +66,7 @@ def get_auth_config():
         microsoft_client_id=MICROSOFT_CLIENT_ID if ENABLE_MICROSOFT_AUTH else None,
         microsoft_authority=microsoft_authority,
         google_client_id=GOOGLE_CLIENT_ID if ENABLE_GOOGLE_AUTH else None,
+        auth_flow_type=AUTH_FLOW_TYPE,
     )
 
 
@@ -191,6 +202,207 @@ def microsoft_login(microsoft_token: schemas.MicrosoftLogin, db: Session = Depen
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+# --- Redirect-based OAuth Flow (Authorization Code) ---
+# These endpoints are only active when AUTH_FLOW_TYPE=redirect.
+# They implement a server-side code exchange so the browser never opens a popup.
+
+
+@router.get("/google/authorize")
+def google_authorize(request: Request):
+    """Redirect user to Google's OAuth consent page."""
+    if AUTH_FLOW_TYPE != "redirect":
+        raise HTTPException(status_code=400, detail="Redirect flow not enabled")
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth not fully configured for redirect flow")
+
+    state = secrets.token_urlsafe(32)
+    redirect_uri = str(request.base_url).rstrip('/') + "/auth/google/callback"
+
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+
+    google_auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+
+    response = RedirectResponse(url=google_auth_url, status_code=302)
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=600,
+    )
+    return response
+
+
+@router.get("/google/callback")
+def google_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Handle Google OAuth callback — exchange code for tokens and redirect to frontend."""
+    stored_state = request.cookies.get("oauth_state")
+    if not stored_state or stored_state != state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    redirect_uri = str(request.base_url).rstrip('/') + "/auth/google/callback"
+
+    token_response = http_requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+        timeout=10,
+    )
+
+    if token_response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+
+    token_data = token_response.json()
+    id_token_str = token_data.get("id_token")
+    if not id_token_str:
+        raise HTTPException(status_code=400, detail="No ID token in response")
+
+    google_info = verify_google_token(id_token_str)
+
+    if not google_info.get('email_verified'):
+        frontend_url = get_site_url(db)
+        return RedirectResponse(url=f"{frontend_url}/login?error=email_not_verified")
+
+    user = get_or_create_oauth_user(db, google_info)
+
+    if not user.is_active:
+        frontend_url = get_site_url(db)
+        return RedirectResponse(url=f"{frontend_url}/login?error=account_inactive")
+
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=access_token_expires,
+    )
+
+    frontend_url = get_site_url(db)
+    response = RedirectResponse(url=f"{frontend_url}/login/callback?token={access_token}", status_code=302)
+    response.delete_cookie("oauth_state")
+    return response
+
+
+@router.get("/microsoft/authorize")
+def microsoft_authorize(request: Request):
+    """Redirect user to Microsoft's OAuth consent page."""
+    if AUTH_FLOW_TYPE != "redirect":
+        raise HTTPException(status_code=400, detail="Redirect flow not enabled")
+    if not MICROSOFT_CLIENT_ID or not MICROSOFT_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Microsoft OAuth not fully configured for redirect flow")
+
+    state = secrets.token_urlsafe(32)
+    redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
+
+    authority = OIDC_DISCOVERY_URL.split("/v2.0/")[0] if "/v2.0/" in OIDC_DISCOVERY_URL else "https://login.microsoftonline.com/common"
+
+    params = {
+        "client_id": MICROSOFT_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "response_mode": "query",
+        "prompt": "select_account",
+    }
+
+    ms_auth_url = f"{authority}/oauth2/v2.0/authorize?{urlencode(params)}"
+
+    response = RedirectResponse(url=ms_auth_url, status_code=302)
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=600,
+    )
+    return response
+
+
+@router.get("/microsoft/callback")
+def microsoft_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Handle Microsoft OAuth callback — exchange code for tokens and redirect to frontend."""
+    stored_state = request.cookies.get("oauth_state")
+    if not stored_state or stored_state != state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
+    authority = OIDC_DISCOVERY_URL.split("/v2.0/")[0] if "/v2.0/" in OIDC_DISCOVERY_URL else "https://login.microsoftonline.com/common"
+
+    token_response = http_requests.post(
+        f"{authority}/oauth2/v2.0/token",
+        data={
+            "code": code,
+            "client_id": MICROSOFT_CLIENT_ID,
+            "client_secret": MICROSOFT_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+            "scope": "openid email profile",
+        },
+        timeout=10,
+    )
+
+    if token_response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+
+    token_data = token_response.json()
+    id_token_str = token_data.get("id_token")
+    if not id_token_str:
+        raise HTTPException(status_code=400, detail="No ID token in response")
+
+    microsoft_info = verify_microsoft_token(id_token_str)
+
+    if not microsoft_info.get('email_verified'):
+        frontend_url = get_site_url(db)
+        return RedirectResponse(url=f"{frontend_url}/login?error=email_not_verified")
+
+    user = get_or_create_oauth_user(db, microsoft_info, provider='microsoft')
+
+    if not user.is_active:
+        frontend_url = get_site_url(db)
+        return RedirectResponse(url=f"{frontend_url}/login?error=account_inactive")
+
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(user.id)},
+        expires_delta=access_token_expires,
+    )
+
+    frontend_url = get_site_url(db)
+    response = RedirectResponse(url=f"{frontend_url}/login/callback?token={access_token}", status_code=302)
+    response.delete_cookie("oauth_state")
+    return response
 
 
 @router.get("/me", response_model=schemas.User)

@@ -28,6 +28,7 @@ import Recommendations from '../pages/analytics/Recommendations';
 import HowTalesWorks from '../pages/HowTalesWorks';
 import Help from '../pages/Help';
 import Login from '../pages/auth/Login';
+import OAuthCallback from '../pages/auth/OAuthCallback';
 import Register from '../pages/auth/Register';
 import InviteAccept from '../pages/auth/InviteAccept';
 import { TenantProvider } from '../contexts/TenantContext';
@@ -46,6 +47,7 @@ const AppRoutes: React.FC = () => {
       <Routes>
         {/* Public Routes */}
         <Route path="/login" element={<Login />} />
+        <Route path="/login/callback" element={<OAuthCallback />} />
         <Route path="/register" element={<Register />} />
         <Route path="/invite/accept" element={<InviteAccept />} />
 

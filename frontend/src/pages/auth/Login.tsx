@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Box,
   Paper,
@@ -25,10 +25,12 @@ interface AuthConfig {
   microsoft_client_id: string | null;
   microsoft_authority: string | null;
   google_client_id: string | null;
+  auth_flow_type: 'popup' | 'redirect';
 }
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { login, googleLogin, microsoftLogin } = useAuth();
 
   const [error, setError] = useState('');
@@ -40,6 +42,18 @@ const Login: React.FC = () => {
   const msalInstanceRef = useRef<PublicClientApplication | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Handle error query params from redirect flow
+  useEffect(() => {
+    const errorParam = searchParams.get('error');
+    if (errorParam === 'account_inactive') {
+      setError('Account is not active. Please contact your administrator for approval.');
+    } else if (errorParam === 'email_not_verified') {
+      setError('Email not verified with the identity provider.');
+    } else if (errorParam) {
+      setError('Authentication failed. Please try again.');
+    }
+  }, [searchParams]);
 
   // Fetch auth and branding config from backend
   useEffect(() => {
@@ -61,6 +75,7 @@ const Login: React.FC = () => {
           microsoft_client_id: null,
           microsoft_authority: null,
           google_client_id: null,
+          auth_flow_type: 'popup',
         });
         setBranding({
           site_name: 'Tales',
@@ -77,8 +92,9 @@ const Login: React.FC = () => {
     fetchConfig();
   }, []);
 
-  // Initialize MSAL when Microsoft auth is enabled and we have a client ID
+  // Initialize MSAL when Microsoft auth is enabled and we have a client ID (popup mode only)
   useEffect(() => {
+    if (authConfig?.auth_flow_type === 'redirect') return;
     if (authConfig?.microsoft_auth_enabled && authConfig.microsoft_client_id) {
       const msalConfig = {
         auth: {
@@ -285,9 +301,9 @@ const Login: React.FC = () => {
         {/* OAuth Buttons */}
         {hasOAuth && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, alignItems: 'center', mb: 2 }}>
-            {/* Google Login Button */}
-            {showGoogle && authConfig.google_client_id && (
-              <GoogleOAuthProvider clientId={authConfig.google_client_id}>
+            {/* Google Login — Popup Mode */}
+            {authConfig?.auth_flow_type !== 'redirect' && showGoogle && authConfig!.google_client_id && (
+              <GoogleOAuthProvider clientId={authConfig!.google_client_id}>
                 <Box sx={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
                   <GoogleLogin
                     onSuccess={handleGoogleSuccess}
@@ -301,12 +317,90 @@ const Login: React.FC = () => {
               </GoogleOAuthProvider>
             )}
 
-            {/* Microsoft Login Button */}
-            {showMicrosoft && (
+            {/* Google Login — Redirect Mode */}
+            {authConfig?.auth_flow_type === 'redirect' && showGoogle && (
+              <Button
+                variant="outlined"
+                component="a"
+                href={`${api.defaults.baseURL}/auth/google/authorize`}
+                disabled={loading}
+                fullWidth
+                sx={{
+                  borderColor: primaryColor,
+                  color: primaryColor,
+                  borderWidth: '1.5px',
+                  '&:hover': {
+                    borderColor: primaryColor,
+                    borderWidth: '1.5px',
+                    backgroundColor: `${primaryColor}0a`,
+                  },
+                  textTransform: 'none',
+                  fontSize: '15px',
+                  padding: '11px 24px',
+                  fontWeight: 600,
+                  fontFamily: '"Roboto Condensed", sans-serif',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 1.5,
+                  borderRadius: 1,
+                }}
+              >
+                <svg width="21" height="21" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20.64 10.2c0-.63-.06-1.25-.16-1.84H10.5v3.49h5.68a4.85 4.85 0 0 1-2.11 3.18v2.64h3.42c2 -1.84 3.15-4.56 3.15-7.47z" fill="#4285F4"/>
+                  <path d="M10.5 21c2.85 0 5.24-.94 6.99-2.56l-3.42-2.64c-.94.63-2.15 1-3.57 1-2.74 0-5.06-1.85-5.89-4.35H1.07v2.73A10.5 10.5 0 0 0 10.5 21z" fill="#34A853"/>
+                  <path d="M4.61 12.45a6.3 6.3 0 0 1 0-3.9V5.82H1.07a10.5 10.5 0 0 0 0 9.36l3.54-2.73z" fill="#FBBC05"/>
+                  <path d="M10.5 4.15a5.7 5.7 0 0 1 4.02 1.57l3.01-3.01A10.12 10.12 0 0 0 10.5 0 10.5 10.5 0 0 0 1.07 5.82l3.54 2.73c.83-2.5 3.15-4.4 5.89-4.4z" fill="#EA4335"/>
+                </svg>
+                Sign in with Google
+              </Button>
+            )}
+
+            {/* Microsoft Login — Popup Mode */}
+            {authConfig?.auth_flow_type !== 'redirect' && showMicrosoft && (
               <Button
                 variant="outlined"
                 onClick={handleMicrosoftLogin}
                 disabled={loading || !msalInitialized}
+                fullWidth
+                sx={{
+                  borderColor: primaryColor,
+                  color: primaryColor,
+                  borderWidth: '1.5px',
+                  '&:hover': {
+                    borderColor: primaryColor,
+                    borderWidth: '1.5px',
+                    backgroundColor: `${primaryColor}0a`,
+                  },
+                  textTransform: 'none',
+                  fontSize: '15px',
+                  padding: '11px 24px',
+                  fontWeight: 600,
+                  fontFamily: '"Roboto Condensed", sans-serif',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 1.5,
+                  borderRadius: 1,
+                }}
+              >
+                <svg width="21" height="21" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+                  <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+                  <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+                  <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+                </svg>
+                Sign in with Microsoft
+              </Button>
+            )}
+
+            {/* Microsoft Login — Redirect Mode */}
+            {authConfig?.auth_flow_type === 'redirect' && showMicrosoft && (
+              <Button
+                variant="outlined"
+                component="a"
+                href={`${api.defaults.baseURL}/auth/microsoft/authorize`}
+                disabled={loading}
                 fullWidth
                 sx={{
                   borderColor: primaryColor,

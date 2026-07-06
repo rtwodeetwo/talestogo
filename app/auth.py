@@ -35,6 +35,10 @@ ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "true").lower() == "true"
 ENABLE_MICROSOFT_AUTH = os.getenv("ENABLE_MICROSOFT_AUTH", "true").lower() == "true"
 ENABLE_GOOGLE_AUTH = os.getenv("ENABLE_GOOGLE_AUTH", "false").lower() == "true"
 
+# OAuth Flow Type: "popup" (default, client-side) or "redirect" (server-side authorization code flow)
+# Use "redirect" for compatibility with security scanners (e.g., Rapid7 InsightAppSec)
+AUTH_FLOW_TYPE = os.getenv("AUTH_FLOW_TYPE", "popup")
+
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")

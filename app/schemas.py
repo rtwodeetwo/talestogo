@@ -484,6 +484,7 @@ class AuthConfig(BaseModel):
     microsoft_client_id: Optional[str] = None
     microsoft_authority: Optional[str] = None
     google_client_id: Optional[str] = None
+    auth_flow_type: str = "popup"
 
 
 class BrandingConfig(BaseModel):
