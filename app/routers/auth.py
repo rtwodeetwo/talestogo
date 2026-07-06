@@ -4,6 +4,8 @@ Handles user registration, login (email/password, Google, Microsoft OAuth), and 
 """
 import os
 import secrets
+import hashlib
+import base64
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
@@ -307,14 +309,20 @@ def google_callback(
 
 @router.get("/microsoft/authorize")
 def microsoft_authorize(request: Request):
-    """Redirect user to Microsoft's OAuth consent page."""
+    """Redirect user to Microsoft's OAuth consent page (with PKCE)."""
     if AUTH_FLOW_TYPE != "redirect":
         raise HTTPException(status_code=400, detail="Redirect flow not enabled")
-    if not MICROSOFT_CLIENT_ID or not MICROSOFT_CLIENT_SECRET:
-        raise HTTPException(status_code=500, detail="Microsoft OAuth not fully configured for redirect flow")
+    if not MICROSOFT_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Microsoft OAuth not configured (missing client ID)")
 
     state = secrets.token_urlsafe(32)
     redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
+
+    # PKCE: generate code_verifier and code_challenge
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
 
     authority = OIDC_DISCOVERY_URL.split("/v2.0/")[0] if "/v2.0/" in OIDC_DISCOVERY_URL else "https://login.microsoftonline.com/common"
 
@@ -326,6 +334,8 @@ def microsoft_authorize(request: Request):
         "state": state,
         "response_mode": "query",
         "prompt": "select_account",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
 
     ms_auth_url = f"{authority}/oauth2/v2.0/authorize?{urlencode(params)}"
@@ -334,6 +344,14 @@ def microsoft_authorize(request: Request):
     response.set_cookie(
         key="oauth_state",
         value=state,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=600,
+    )
+    response.set_cookie(
+        key="oauth_verifier",
+        value=code_verifier,
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="lax",
@@ -354,19 +372,28 @@ def microsoft_callback(
     if not stored_state or stored_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
+    code_verifier = request.cookies.get("oauth_verifier")
+    if not code_verifier:
+        raise HTTPException(status_code=400, detail="Missing PKCE verifier")
+
     redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
     authority = OIDC_DISCOVERY_URL.split("/v2.0/")[0] if "/v2.0/" in OIDC_DISCOVERY_URL else "https://login.microsoftonline.com/common"
 
+    token_data_payload = {
+        "code": code,
+        "client_id": MICROSOFT_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+        "scope": "openid email profile",
+        "code_verifier": code_verifier,
+    }
+    # Include client_secret when available (confidential client); omit for public client PKCE-only
+    if MICROSOFT_CLIENT_SECRET:
+        token_data_payload["client_secret"] = MICROSOFT_CLIENT_SECRET
+
     token_response = http_requests.post(
         f"{authority}/oauth2/v2.0/token",
-        data={
-            "code": code,
-            "client_id": MICROSOFT_CLIENT_ID,
-            "client_secret": MICROSOFT_CLIENT_SECRET,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-            "scope": "openid email profile",
-        },
+        data=token_data_payload,
         timeout=10,
     )
 
@@ -402,6 +429,7 @@ def microsoft_callback(
     frontend_url = get_site_url(db)
     response = RedirectResponse(url=f"{frontend_url}/login/callback?token={access_token}", status_code=302)
     response.delete_cookie("oauth_state")
+    response.delete_cookie("oauth_verifier")
     return response
 
 
