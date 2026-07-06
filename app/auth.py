@@ -55,6 +55,9 @@ def _resolve_auth_flow_type() -> str:
 
 AUTH_FLOW_TYPE = _resolve_auth_flow_type()
 
+# Auto-login: when true and redirect+Microsoft is the sole auth method, skip the login page
+AUTO_LOGIN_MICROSOFT = os.getenv("AUTO_LOGIN_MICROSOFT", "false").lower() == "true"
+
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")

@@ -26,6 +26,7 @@ interface AuthConfig {
   microsoft_authority: string | null;
   google_client_id: string | null;
   auth_flow_type: 'popup' | 'redirect';
+  auto_login: boolean;
 }
 
 const Login: React.FC = () => {
@@ -76,6 +77,7 @@ const Login: React.FC = () => {
           microsoft_authority: null,
           google_client_id: null,
           auth_flow_type: 'popup',
+          auto_login: false,
         });
         setBranding({
           site_name: 'Tales',
@@ -91,6 +93,17 @@ const Login: React.FC = () => {
 
     fetchConfig();
   }, []);
+
+  // Auto-login: redirect immediately to Microsoft if configured and no error present
+  useEffect(() => {
+    if (
+      authConfig?.auto_login &&
+      !searchParams.get('error') &&
+      !localStorage.getItem('tales_access_token')
+    ) {
+      window.location.href = `${api.defaults.baseURL}/auth/microsoft/authorize`;
+    }
+  }, [authConfig, searchParams]);
 
   // Initialize MSAL when Microsoft auth is enabled and we have a client ID (popup mode only)
   useEffect(() => {

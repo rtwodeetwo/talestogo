@@ -35,6 +35,7 @@ from ..auth import (
     GOOGLE_CLIENT_SECRET,
     OIDC_DISCOVERY_URL,
     AUTH_FLOW_TYPE,
+    AUTO_LOGIN_MICROSOFT,
 )
 from ..services.site_config import get_site_url
 
@@ -61,14 +62,27 @@ def get_auth_config():
         if authority != OIDC_DISCOVERY_URL:
             microsoft_authority = authority
 
+    ms_enabled = ENABLE_MICROSOFT_AUTH and bool(MICROSOFT_CLIENT_ID)
+    google_enabled = ENABLE_GOOGLE_AUTH and bool(GOOGLE_CLIENT_ID)
+
+    # auto_login: skip login page and redirect straight to Microsoft
+    auto_login = (
+        AUTO_LOGIN_MICROSOFT
+        and AUTH_FLOW_TYPE == "redirect"
+        and ms_enabled
+        and not ENABLE_LOCAL_AUTH
+        and not google_enabled
+    )
+
     return schemas.AuthConfig(
         local_auth_enabled=ENABLE_LOCAL_AUTH,
-        microsoft_auth_enabled=ENABLE_MICROSOFT_AUTH and bool(MICROSOFT_CLIENT_ID),
-        google_auth_enabled=ENABLE_GOOGLE_AUTH and bool(GOOGLE_CLIENT_ID),
+        microsoft_auth_enabled=ms_enabled,
+        google_auth_enabled=google_enabled,
         microsoft_client_id=MICROSOFT_CLIENT_ID if ENABLE_MICROSOFT_AUTH else None,
         microsoft_authority=microsoft_authority,
         google_client_id=GOOGLE_CLIENT_ID if ENABLE_GOOGLE_AUTH else None,
         auth_flow_type=AUTH_FLOW_TYPE,
+        auto_login=auto_login,
     )
 
 
