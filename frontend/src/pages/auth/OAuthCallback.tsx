@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Box, CircularProgress, Alert } from '@mui/material';
-import { authAPI } from '../../services/api';
+import { useAuth } from '../../contexts/AuthContext';
 
 const OAuthCallback: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { refreshUser } = useAuth();
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -33,7 +34,8 @@ const OAuthCallback: React.FC = () => {
     // Clear the token from the URL to prevent leakage via history/bookmarks
     window.history.replaceState({}, '', '/login/callback');
 
-    authAPI.getCurrentUser()
+    // Update AuthContext so ProtectedRoute sees the authenticated user
+    refreshUser()
       .then(() => {
         navigate('/', { replace: true });
       })
@@ -41,7 +43,7 @@ const OAuthCallback: React.FC = () => {
         localStorage.removeItem('tales_access_token');
         setError('Failed to complete login. Please try again.');
       });
-  }, [searchParams, navigate]);
+  }, [searchParams, navigate, refreshUser]);
 
   if (error) {
     return (
