@@ -45,6 +45,26 @@ router = APIRouter(
 )
 
 
+def _is_local_dev(request: Request) -> bool:
+    """True when running on localhost (no TLS expected)."""
+    base = str(request.base_url)
+    return "localhost" in base or "127.0.0.1" in base
+
+
+def _get_redirect_uri(request: Request, path: str) -> str:
+    """Build an absolute redirect URI, forcing HTTPS in production.
+
+    Reverse proxies (Azure Container Apps, AWS ALB, nginx) terminate TLS and
+    forward requests over plain HTTP. The request.base_url therefore appears as
+    http://, but OAuth providers require the registered redirect URI to match
+    the public HTTPS origin exactly.
+    """
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("http://") and not _is_local_dev(request):
+        base = "https://" + base[len("http://"):]
+    return f"{base}{path}"
+
+
 @router.get("/config", response_model=schemas.AuthConfig)
 def get_auth_config():
     """
@@ -234,7 +254,7 @@ def google_authorize(request: Request):
         raise HTTPException(status_code=500, detail="Google OAuth not fully configured for redirect flow")
 
     state = secrets.token_urlsafe(32)
-    redirect_uri = str(request.base_url).rstrip('/') + "/auth/google/callback"
+    redirect_uri = _get_redirect_uri(request, "/auth/google/callback")
 
     params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -253,7 +273,7 @@ def google_authorize(request: Request):
         key="oauth_state",
         value=state,
         httponly=True,
-        secure=request.url.scheme == "https",
+        secure=not _is_local_dev(request),
         samesite="lax",
         max_age=600,
     )
@@ -272,7 +292,7 @@ def google_callback(
     if not stored_state or stored_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    redirect_uri = str(request.base_url).rstrip('/') + "/auth/google/callback"
+    redirect_uri = _get_redirect_uri(request, "/auth/google/callback")
 
     token_response = http_requests.post(
         "https://oauth2.googleapis.com/token",
@@ -330,7 +350,7 @@ def microsoft_authorize(request: Request):
         raise HTTPException(status_code=500, detail="Microsoft OAuth not configured (missing client ID)")
 
     state = secrets.token_urlsafe(32)
-    redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
+    redirect_uri = _get_redirect_uri(request, "/auth/microsoft/callback")
 
     # PKCE: generate code_verifier and code_challenge
     code_verifier = secrets.token_urlsafe(64)
@@ -359,7 +379,7 @@ def microsoft_authorize(request: Request):
         key="oauth_state",
         value=state,
         httponly=True,
-        secure=request.url.scheme == "https",
+        secure=not _is_local_dev(request),
         samesite="lax",
         max_age=600,
     )
@@ -367,7 +387,7 @@ def microsoft_authorize(request: Request):
         key="oauth_verifier",
         value=code_verifier,
         httponly=True,
-        secure=request.url.scheme == "https",
+        secure=not _is_local_dev(request),
         samesite="lax",
         max_age=600,
     )
@@ -390,7 +410,7 @@ def microsoft_callback(
     if not code_verifier:
         raise HTTPException(status_code=400, detail="Missing PKCE verifier")
 
-    redirect_uri = str(request.base_url).rstrip('/') + "/auth/microsoft/callback"
+    redirect_uri = _get_redirect_uri(request, "/auth/microsoft/callback")
     authority = OIDC_DISCOVERY_URL.split("/v2.0/")[0] if "/v2.0/" in OIDC_DISCOVERY_URL else "https://login.microsoftonline.com/common"
 
     token_data_payload = {
