@@ -199,7 +199,7 @@ Requires `ENABLE_MICROSOFT_AUTH=true` (default) in addition to the variables bel
 
 **Setup:** https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
 
-No client secret is needed — the frontend uses MSAL's client-side PKCE flow. Register `https://<your-domain>/login` as an authorized redirect URI in your app registration.
+No client secret is needed — the frontend uses MSAL's client-side PKCE flow. Register `https://<your-domain>` as an authorized redirect URI in your app registration. If using `AUTH_FLOW_TYPE=redirect`, register `https://<your-domain>/login` instead.
 
 **Note:** The frontend reads OAuth client IDs from the backend's `/auth/config` endpoint at runtime, so `VITE_GOOGLE_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID` build-time variables are no longer needed.
 

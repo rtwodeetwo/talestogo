@@ -36,25 +36,18 @@ ENABLE_MICROSOFT_AUTH = os.getenv("ENABLE_MICROSOFT_AUTH", "true").lower() == "t
 ENABLE_GOOGLE_AUTH = os.getenv("ENABLE_GOOGLE_AUTH", "false").lower() == "true"
 
 # OAuth Flow Type: "popup" (default) or "redirect" (MSAL loginRedirect with client-side PKCE)
-# Use "redirect" for compatibility with security scanners (e.g., Rapid7 InsightAppSec)
-# Auto-detects: if OIDC_CLIENT_ID is set without a client secret, uses redirect+PKCE automatically.
+# Set AUTH_FLOW_TYPE=redirect to opt in to redirect mode (e.g., for Rapid7 InsightAppSec compatibility).
 def _resolve_auth_flow_type() -> str:
-    import logging
-    logger = logging.getLogger(__name__)
-
     explicit = os.getenv("AUTH_FLOW_TYPE")
     if explicit:
         normalized = explicit.strip().lower()
         if normalized not in ("popup", "redirect"):
-            logger.warning(
+            import logging
+            logging.getLogger(__name__).warning(
                 f"AUTH_FLOW_TYPE={explicit!r} is not valid (must be 'popup' or 'redirect'), defaulting to 'popup'"
             )
             return "popup"
         return normalized
-    # Auto-detect: client ID present without a secret → use redirect (PKCE)
-    has_ms_id = bool(
-        os.getenv("OIDC_CLIENT_ID") or os.getenv("ENTRA_CLIENT_ID") or os.getenv("MICROSOFT_CLIENT_ID")
-    )
     return "popup"
 
 AUTH_FLOW_TYPE = _resolve_auth_flow_type()

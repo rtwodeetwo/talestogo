@@ -99,7 +99,9 @@ const Login: React.FC = () => {
       auth: {
         clientId: authConfig.microsoft_client_id,
         authority: authConfig.microsoft_authority || 'https://login.microsoftonline.com/common',
-        redirectUri: window.location.origin + '/login',
+        redirectUri: authConfig.auth_flow_type === 'redirect'
+          ? window.location.origin + '/login'
+          : window.location.origin,
       },
       cache: {
         cacheLocation: 'localStorage' as const,
