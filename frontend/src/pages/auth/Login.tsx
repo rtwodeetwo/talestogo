@@ -110,9 +110,14 @@ const Login: React.FC = () => {
     const instance = new PublicClientApplication(msalConfig);
     msalInstanceRef.current = instance;
 
-    instance.initialize().then(() => {
-      setMsalInitialized(true);
-    });
+    instance.initialize()
+      .then(() => {
+        setMsalInitialized(true);
+      })
+      .catch((err) => {
+        console.error('MSAL initialization failed:', err);
+        setError('Microsoft login is unavailable. Please try another method or refresh.');
+      });
   }, [authConfig]);
 
   const redirectHandledRef = useRef(false);

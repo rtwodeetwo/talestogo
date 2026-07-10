@@ -581,6 +581,11 @@ GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 
 ### Microsoft OAuth Setup
 
+> **Upgrading from a previous version?** The redirect URI has changed from
+> `http://your-tales-url` (root) to `http://your-tales-url/login`. Update your
+> Azure AD / Entra app registration under "Authentication" → redirect URIs before
+> deploying this version, or Microsoft login will fail with a redirect_uri mismatch.
+
 1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
 2. Create a new App Registration
 3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url/login` (e.g., `http://localhost:8080/login`)

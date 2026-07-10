@@ -35,7 +35,7 @@ ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "true").lower() == "true"
 ENABLE_MICROSOFT_AUTH = os.getenv("ENABLE_MICROSOFT_AUTH", "true").lower() == "true"
 ENABLE_GOOGLE_AUTH = os.getenv("ENABLE_GOOGLE_AUTH", "false").lower() == "true"
 
-# OAuth Flow Type: "popup" (default, client-side) or "redirect" (server-side authorization code flow)
+# OAuth Flow Type: "popup" (default) or "redirect" (MSAL loginRedirect with client-side PKCE)
 # Use "redirect" for compatibility with security scanners (e.g., Rapid7 InsightAppSec)
 # Auto-detects: if OIDC_CLIENT_ID is set without a client secret, uses redirect+PKCE automatically.
 def _resolve_auth_flow_type() -> str:
