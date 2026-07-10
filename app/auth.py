@@ -55,17 +55,6 @@ def _resolve_auth_flow_type() -> str:
     has_ms_id = bool(
         os.getenv("OIDC_CLIENT_ID") or os.getenv("ENTRA_CLIENT_ID") or os.getenv("MICROSOFT_CLIENT_ID")
     )
-    has_ms_secret = bool(
-        os.getenv("OIDC_CLIENT_SECRET") or os.getenv("ENTRA_SECRET_KEY") or os.getenv("MICROSOFT_CLIENT_SECRET")
-    )
-    if has_ms_secret:
-        logger.warning(
-            "OIDC_CLIENT_SECRET / ENTRA_SECRET_KEY / MICROSOFT_CLIENT_SECRET is set but no longer used. "
-            "OAuth now uses client-side PKCE (no secret needed). Remove the secret from your .env. "
-            "To use redirect mode, set AUTH_FLOW_TYPE=redirect explicitly."
-        )
-    if has_ms_id and not has_ms_secret:
-        return "redirect"
     return "popup"
 
 AUTH_FLOW_TYPE = _resolve_auth_flow_type()
