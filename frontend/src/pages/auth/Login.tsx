@@ -17,6 +17,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import type { BrandingConfig } from '../../types';
 
+const MS_LOGIN_SCOPES = ['openid', 'profile', 'email'];
+
 const MicrosoftIcon = () => (
   <svg width="21" height="21" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
     <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
@@ -40,7 +42,7 @@ interface AuthConfig {
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login, googleLogin, microsoftLogin, isAuthenticated } = useAuth();
+  const { login, googleLogin, microsoftLogin, isAuthenticated, loading: authLoading } = useAuth();
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -128,24 +130,27 @@ const Login: React.FC = () => {
   useEffect(() => {
     if (!msalInitialized || !msalInstanceRef.current) return;
     if (authConfig?.auth_flow_type !== 'redirect') return;
+    if (authLoading) return;
     if (redirectHandledRef.current) return;
     redirectHandledRef.current = true;
 
+    let cancelled = false;
     const msalInstance = msalInstanceRef.current;
 
     msalInstance.handleRedirectPromise()
       .then(async (response) => {
+        if (cancelled) return;
         if (response?.idToken) {
           sessionStorage.removeItem('tales_auto_login_attempted');
           setLoading(true);
           try {
             await microsoftLogin(response.idToken);
-            navigate('/');
+            if (!cancelled) navigate('/');
           } catch (err: any) {
             sessionStorage.setItem('tales_auto_login_attempted', '1');
-            setError(err.response?.data?.detail || 'Microsoft login failed.');
+            if (!cancelled) setError(err.response?.data?.detail || 'Microsoft login failed.');
           } finally {
-            setLoading(false);
+            if (!cancelled) setLoading(false);
           }
         } else if (
           authConfig?.auto_login
@@ -153,12 +158,11 @@ const Login: React.FC = () => {
           && !isAuthenticated
         ) {
           sessionStorage.setItem('tales_auto_login_attempted', '1');
-          msalInstance.loginRedirect({
-            scopes: ['openid', 'profile', 'email'],
-          });
+          await msalInstance.loginRedirect({ scopes: MS_LOGIN_SCOPES });
         }
       })
       .catch((err) => {
+        if (cancelled) return;
         sessionStorage.setItem('tales_auto_login_attempted', '1');
         if (err instanceof BrowserAuthError && err.errorCode === 'user_cancelled') {
           setError('Login was cancelled.');
@@ -168,7 +172,9 @@ const Login: React.FC = () => {
           setError('Microsoft login failed. Please try again.');
         }
       });
-  }, [msalInitialized, authConfig, microsoftLogin, navigate, isAuthenticated]);
+
+    return () => { cancelled = true; };
+  }, [msalInitialized, authConfig, microsoftLogin, navigate, isAuthenticated, authLoading]);
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
     setError('');
@@ -201,13 +207,9 @@ const Login: React.FC = () => {
 
     setError('');
 
-    const loginRequest = {
-      scopes: ['openid', 'profile', 'email'],
-    };
-
     if (authConfig?.auth_flow_type === 'redirect') {
       try {
-        await msalInstanceRef.current.loginRedirect(loginRequest);
+        await msalInstanceRef.current.loginRedirect({ scopes: MS_LOGIN_SCOPES });
       } catch (err: any) {
         if (err instanceof BrowserAuthError && err.errorCode === 'interaction_in_progress') {
           // Already redirecting — ignore duplicate click
@@ -218,7 +220,7 @@ const Login: React.FC = () => {
     } else {
       setLoading(true);
       try {
-        const loginResponse = await msalInstanceRef.current.loginPopup(loginRequest);
+        const loginResponse = await msalInstanceRef.current.loginPopup({ scopes: MS_LOGIN_SCOPES });
         if (loginResponse.idToken) {
           await microsoftLogin(loginResponse.idToken);
           navigate('/');
