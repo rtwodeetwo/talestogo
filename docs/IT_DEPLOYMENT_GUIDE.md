@@ -38,8 +38,9 @@ Tales supports both PPPL standard naming and legacy variable names for backwards
 |---------------|-------------|-------------|
 | `APP_SECRET` | `JWT_SECRET_KEY` | JWT signing secret |
 | `OIDC_CLIENT_ID` | `MICROSOFT_CLIENT_ID` | Azure AD client ID |
-| `OIDC_CLIENT_SECRET` | `MICROSOFT_CLIENT_SECRET` | Azure AD client secret |
 | `OIDC_DISCOVERY_URL` | (new) | OIDC discovery endpoint |
+
+No client secret is needed for OAuth — the app uses MSAL's client-side PKCE flow.
 
 ### Authentication Enable/Disable Flags
 
@@ -65,12 +66,11 @@ SITE_SECONDARY_COLOR=#75c9c8      # Secondary theme color
 
 ### OIDC Configuration for Entra ID
 
-IT will provide OIDC credentials during app registration:
+IT will provide the OIDC client ID during app registration (no secret needed — PKCE flow):
 
 ```bash
-# Standard PPPL OIDC variables
+# Standard PPPL OIDC variable (no secret required)
 OIDC_CLIENT_ID=<from-IT>
-OIDC_CLIENT_SECRET=<from-IT>
 
 # Optional: For tenant-specific authentication
 OIDC_DISCOVERY_URL=https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration
@@ -91,8 +91,8 @@ OIDC_DISCOVERY_URL=https://login.microsoftonline.com/{tenant-id}/v2.0/.well-know
 2. Code pushed to repository
 3. `.env` file created with PPPL variables
 4. Container builds successfully in GitLab Pipeline
-5. IT has provided OIDC credentials
-6. OIDC_CLIENT_ID and OIDC_CLIENT_SECRET configured
+5. IT has provided OIDC client ID (no secret needed)
+6. OIDC_CLIENT_ID configured
 7. Admin user created via setup script
 
 ---
@@ -575,32 +575,29 @@ For each OAuth provider, you need to: (1) set the enable flag, (2) add the crede
 # Enable Google login
 ENABLE_GOOGLE_AUTH=true
 
-# Google OAuth credentials
+# Google OAuth credentials (no secret needed — client-side flow)
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
 
 ### Microsoft OAuth Setup
 
 1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
 2. Create a new App Registration
-3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url` (e.g., `http://localhost:8080`)
-4. Create a client secret under Certificates & secrets
+3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url/login` (e.g., `http://localhost:8080/login`)
+4. No client secret is needed — the app uses MSAL's client-side PKCE flow
 5. Add to your `.env`:
 
 ```bash
 # Enable Microsoft login (enabled by default)
 ENABLE_MICROSOFT_AUTH=true
 
-# Microsoft OAuth credentials
+# Microsoft OAuth credentials (no secret needed — client-side PKCE flow)
 MICROSOFT_CLIENT_ID=your-app-client-id
-MICROSOFT_CLIENT_SECRET=your-secret
 ```
 
 For PPPL/national lab deployments using OIDC naming:
 ```bash
 OIDC_CLIENT_ID=your-app-client-id
-OIDC_CLIENT_SECRET=your-secret
 ```
 
 ### After Adding OAuth Credentials

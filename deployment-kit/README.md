@@ -48,9 +48,8 @@ GEMINI_API_KEY=          # Google Gemini (supports web search)
 PERPLEXITY_API_KEY=      # Perplexity sonar (supports web search)
 AZURE_OPENAI_API_KEY=    # Azure OpenAI (set this if your IT runs OpenAI on Azure)
 
-# OIDC Configuration (IT provides these)
+# OIDC Configuration (IT provides this — no secret needed)
 OIDC_CLIENT_ID=from-it-department
-OIDC_CLIENT_SECRET=from-it-department
 ```
 
 ### Step 2: Start Tales
@@ -94,9 +93,8 @@ SITE_SECONDARY_COLOR=#75c9c8
 ### Authentication Variables
 
 ```bash
-# Your organization's Entra ID credentials (from IT)
+# Your organization's Entra ID app registration (from IT — no secret needed)
 OIDC_CLIENT_ID=your-client-id
-OIDC_CLIENT_SECRET=your-client-secret
 
 # Optional: Tenant-specific OIDC endpoint
 OIDC_DISCOVERY_URL=https://login.microsoftonline.com/{your-tenant-id}/v2.0/.well-known/openid-configuration
@@ -132,8 +130,8 @@ After logging in:
 | Method | Setup Required | Variables |
 |--------|----------------|-----------|
 | Email/Password | None | `ENABLE_LOCAL_AUTH=true` (default) |
-| Microsoft/Entra ID | OIDC credentials from IT | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` |
-| Google OAuth | Optional | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ENABLE_GOOGLE_AUTH=true` |
+| Microsoft/Entra ID | App registration from IT (no secret needed) | `OIDC_CLIENT_ID` |
+| Google OAuth | Optional | `GOOGLE_CLIENT_ID`, `ENABLE_GOOGLE_AUTH=true` |
 
 ---
 
@@ -163,10 +161,9 @@ Tales auto-detects which API keys you've configured and makes those providers av
 |----------|-------------|-------------|
 | `APP_SECRET` | `JWT_SECRET_KEY` | JWT signing secret |
 | `OIDC_CLIENT_ID` | `MICROSOFT_CLIENT_ID` | Azure AD client ID |
-| `OIDC_CLIENT_SECRET` | `MICROSOFT_CLIENT_SECRET` | Azure AD client secret |
 | `OIDC_DISCOVERY_URL` | - | OIDC discovery endpoint |
 
-Legacy variable names are supported for backwards compatibility.
+Legacy variable names are supported for backwards compatibility. No client secret is needed for OAuth — the app uses MSAL's client-side PKCE flow.
 
 ---
 

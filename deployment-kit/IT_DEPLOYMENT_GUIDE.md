@@ -148,8 +148,7 @@ See `.env.template` for a complete list of environment variables.
 |----------|-------------|
 | `APP_SECRET` | JWT signing secret (required) |
 | `ENCRYPTION_KEY` | Key for encrypting stored API keys (required) |
-| `OIDC_CLIENT_ID` | Azure AD / Entra ID client ID |
-| `OIDC_CLIENT_SECRET` | Azure AD / Entra ID client secret |
+| `OIDC_CLIENT_ID` | Azure AD / Entra ID client ID (no secret needed) |
 | `SITE_NAME` | Your organization's name for the UI |
 | `SITE_PRIMARY_COLOR` | Primary theme color (hex) |
 
@@ -290,11 +289,10 @@ This is the simplest option and requires no additional configuration:
 
 ### Optional: OIDC (Microsoft Entra ID)
 
-For enterprise single sign-on, configure OIDC:
+For enterprise single sign-on, configure OIDC (no secret needed — PKCE flow):
 
 ```bash
 OIDC_CLIENT_ID=<from-IT>
-OIDC_CLIENT_SECRET=<from-IT>
 ENABLE_MICROSOFT_AUTH=true  # enabled by default
 
 # Optional: For tenant-specific authentication
@@ -469,26 +467,24 @@ For each OAuth provider, you need to: (1) set the enable flag, (2) add the crede
 # Enable Google login
 ENABLE_GOOGLE_AUTH=true
 
-# Google OAuth credentials
+# Google OAuth credentials (no secret needed — client-side flow)
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
 
 ### Microsoft OAuth Setup
 
 1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
 2. Create a new App Registration
-3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url` (e.g., `http://localhost:8080`)
-4. Create a client secret under Certificates & secrets
+3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url/login` (e.g., `http://localhost:8080/login`)
+4. No client secret is needed — the app uses MSAL's client-side PKCE flow
 5. Add to your `.env`:
 
 ```bash
 # Enable Microsoft login (enabled by default)
 ENABLE_MICROSOFT_AUTH=true
 
-# Microsoft OAuth credentials (OIDC naming)
+# Microsoft OAuth credentials (no secret needed — client-side PKCE flow)
 OIDC_CLIENT_ID=your-app-client-id
-OIDC_CLIENT_SECRET=your-secret
 ```
 
 ### After Adding OAuth Credentials
