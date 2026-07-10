@@ -40,7 +40,7 @@ interface AuthConfig {
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login, googleLogin, microsoftLogin } = useAuth();
+  const { login, googleLogin, microsoftLogin, isAuthenticated } = useAuth();
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -148,7 +148,7 @@ const Login: React.FC = () => {
         } else if (
           authConfig?.auto_login
           && !sessionStorage.getItem('tales_auto_login_attempted')
-          && !localStorage.getItem('tales_access_token')
+          && !isAuthenticated
         ) {
           sessionStorage.setItem('tales_auto_login_attempted', '1');
           msalInstance.loginRedirect({
@@ -166,7 +166,7 @@ const Login: React.FC = () => {
           setError('Microsoft login failed. Please try again.');
         }
       });
-  }, [msalInitialized, authConfig, microsoftLogin, navigate]);
+  }, [msalInitialized, authConfig, microsoftLogin, navigate, isAuthenticated]);
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
     setError('');
@@ -389,8 +389,8 @@ const Login: React.FC = () => {
         {hasOAuth && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, alignItems: 'center', mb: 2 }}>
             {/* Google Login (always popup — no client-side redirect available) */}
-            {showGoogle && authConfig!.google_client_id && (
-              <GoogleOAuthProvider clientId={authConfig!.google_client_id}>
+            {showGoogle && authConfig?.google_client_id && (
+              <GoogleOAuthProvider clientId={authConfig.google_client_id}>
                 <Box sx={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
                   <GoogleLogin
                     onSuccess={handleGoogleSuccess}
