@@ -130,6 +130,10 @@ export const authAPI = {
   logout: () => {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
+    // Prevent auto-login from re-triggering immediately after an explicit logout.
+    // The login page checks this flag before firing loginRedirect so the user
+    // sees the "Sign in with Microsoft" button instead of being silently SSO'd back in.
+    sessionStorage.setItem('tales_auto_login_attempted', '1');
   },
 
   getCurrentUser: async () => {
