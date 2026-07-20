@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -12,10 +12,21 @@ import {
 } from '@mui/material';
 import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
 import type { CredentialResponse } from '@react-oauth/google';
-import { PublicClientApplication } from '@azure/msal-browser';
+import { PublicClientApplication, BrowserAuthError } from '@azure/msal-browser';
 import { useAuth } from '../../contexts/AuthContext';
 import api from '../../services/api';
 import type { BrandingConfig } from '../../types';
+
+const MS_LOGIN_SCOPES = ['openid', 'profile', 'email'];
+
+const MicrosoftIcon = () => (
+  <svg width="21" height="21" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+    <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+    <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+    <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+  </svg>
+);
 
 // Auth configuration from backend
 interface AuthConfig {
@@ -25,11 +36,13 @@ interface AuthConfig {
   microsoft_client_id: string | null;
   microsoft_authority: string | null;
   google_client_id: string | null;
+  auth_flow_type: 'popup' | 'redirect';
+  auto_login: boolean;
 }
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login, googleLogin, microsoftLogin } = useAuth();
+  const { login, googleLogin, microsoftLogin, isAuthenticated, loading: authLoading } = useAuth();
 
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -61,6 +74,8 @@ const Login: React.FC = () => {
           microsoft_client_id: null,
           microsoft_authority: null,
           google_client_id: null,
+          auth_flow_type: 'popup',
+          auto_login: false,
         });
         setBranding({
           site_name: 'Tales',
@@ -77,29 +92,89 @@ const Login: React.FC = () => {
     fetchConfig();
   }, []);
 
-  // Initialize MSAL when Microsoft auth is enabled and we have a client ID
+  // Initialize MSAL once when Microsoft auth is enabled and we have a client ID
   useEffect(() => {
-    if (authConfig?.microsoft_auth_enabled && authConfig.microsoft_client_id) {
-      const msalConfig = {
-        auth: {
-          clientId: authConfig.microsoft_client_id,
-          authority: authConfig.microsoft_authority || 'https://login.microsoftonline.com/common',
-          redirectUri: window.location.origin,
-        },
-        cache: {
-          cacheLocation: 'localStorage' as const,
-          storeAuthStateInCookie: false,
-        },
-      };
+    if (msalInstanceRef.current) return;
+    if (!authConfig?.microsoft_auth_enabled || !authConfig.microsoft_client_id) return;
 
-      const instance = new PublicClientApplication(msalConfig);
-      msalInstanceRef.current = instance;
+    const msalConfig = {
+      auth: {
+        clientId: authConfig.microsoft_client_id,
+        authority: authConfig.microsoft_authority || 'https://login.microsoftonline.com/common',
+        redirectUri: authConfig.auth_flow_type === 'redirect'
+          ? window.location.origin + '/login'
+          : window.location.origin,
+      },
+      cache: {
+        cacheLocation: 'localStorage' as const,
+        storeAuthStateInCookie: false,
+      },
+    };
 
-      instance.initialize().then(() => {
+    const instance = new PublicClientApplication(msalConfig);
+    msalInstanceRef.current = instance;
+
+    instance.initialize()
+      .then(() => {
         setMsalInitialized(true);
+      })
+      .catch((err) => {
+        console.error('MSAL initialization failed:', err);
+        setError('Microsoft login is unavailable. Please try another method or refresh.');
       });
-    }
   }, [authConfig]);
+
+  const redirectHandledRef = useRef(false);
+
+  // Handle MSAL redirect response (for redirect flow mode)
+  useEffect(() => {
+    if (!msalInitialized || !msalInstanceRef.current) return;
+    if (authConfig?.auth_flow_type !== 'redirect') return;
+    if (authLoading) return;
+    if (redirectHandledRef.current) return;
+    redirectHandledRef.current = true;
+
+    let cancelled = false;
+    const msalInstance = msalInstanceRef.current;
+
+    msalInstance.handleRedirectPromise()
+      .then(async (response) => {
+        if (cancelled) return;
+        if (response?.idToken) {
+          sessionStorage.removeItem('tales_auto_login_attempted');
+          setLoading(true);
+          try {
+            await microsoftLogin(response.idToken);
+            if (!cancelled) navigate('/');
+          } catch (err: any) {
+            sessionStorage.setItem('tales_auto_login_attempted', '1');
+            if (!cancelled) setError(err.response?.data?.detail || 'Microsoft login failed.');
+          } finally {
+            if (!cancelled) setLoading(false);
+          }
+        } else if (
+          authConfig?.auto_login
+          && !sessionStorage.getItem('tales_auto_login_attempted')
+          && !isAuthenticated
+        ) {
+          sessionStorage.setItem('tales_auto_login_attempted', '1');
+          await msalInstance.loginRedirect({ scopes: MS_LOGIN_SCOPES });
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        sessionStorage.setItem('tales_auto_login_attempted', '1');
+        if (err instanceof BrowserAuthError && err.errorCode === 'user_cancelled') {
+          setError('Login was cancelled.');
+        } else if (err instanceof BrowserAuthError && err.errorCode === 'interaction_in_progress') {
+          // Transient state — don't show error to user
+        } else {
+          setError('Microsoft login failed. Please try again.');
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [msalInitialized, authConfig, microsoftLogin, navigate, isAuthenticated, authLoading]);
 
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
     setError('');
@@ -124,35 +199,46 @@ const Login: React.FC = () => {
     setError('Google login failed. Please try again.');
   };
 
-  const handleMicrosoftLogin = async () => {
+  const handleMicrosoftLogin = useCallback(async () => {
     if (!msalInitialized || !msalInstanceRef.current) {
       setError('Microsoft login is initializing. Please wait...');
       return;
     }
 
     setError('');
-    setLoading(true);
 
-    try {
-      const loginRequest = {
-        scopes: ['openid', 'profile', 'email'],
-      };
-
-      const loginResponse = await msalInstanceRef.current.loginPopup(loginRequest);
-
-      if (loginResponse.idToken) {
-        await microsoftLogin(loginResponse.idToken);
-        navigate('/');
-      } else {
-        throw new Error('No ID token received from Microsoft');
+    if (authConfig?.auth_flow_type === 'redirect') {
+      try {
+        await msalInstanceRef.current.loginRedirect({ scopes: MS_LOGIN_SCOPES });
+      } catch (err: any) {
+        if (err instanceof BrowserAuthError && err.errorCode === 'interaction_in_progress') {
+          // Already redirecting — ignore duplicate click
+        } else {
+          setError('Microsoft login failed. Please try again.');
+        }
       }
-    } catch (err: any) {
-      console.error('Microsoft login error:', err);
-      setError(err.response?.data?.detail || 'Microsoft login failed. Please try again.');
-    } finally {
-      setLoading(false);
+    } else {
+      setLoading(true);
+      try {
+        const loginResponse = await msalInstanceRef.current.loginPopup({ scopes: MS_LOGIN_SCOPES });
+        if (loginResponse.idToken) {
+          await microsoftLogin(loginResponse.idToken);
+          navigate('/');
+        } else {
+          throw new Error('No ID token received from Microsoft');
+        }
+      } catch (err: any) {
+        console.error('Microsoft login error:', err);
+        if (err instanceof BrowserAuthError && err.errorCode === 'user_cancelled') {
+          setError('Login was cancelled.');
+        } else {
+          setError(err.response?.data?.detail || 'Microsoft login failed. Please try again.');
+        }
+      } finally {
+        setLoading(false);
+      }
     }
-  };
+  }, [msalInitialized, authConfig?.auth_flow_type, microsoftLogin, navigate]);
 
   const handleLocalLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -205,6 +291,27 @@ const Login: React.FC = () => {
   const showGoogle = authConfig?.google_auth_enabled && authConfig.google_client_id;
   const hasOAuth = showGoogle || showMicrosoft;
   const hasAnyAuth = showLocal || hasOAuth;
+
+  const oauthButtonSx = {
+    borderColor: primaryColor,
+    color: primaryColor,
+    borderWidth: '1.5px',
+    '&:hover': {
+      borderColor: primaryColor,
+      borderWidth: '1.5px',
+      backgroundColor: `${primaryColor}0a`,
+    },
+    textTransform: 'none',
+    fontSize: '15px',
+    padding: '11px 24px',
+    fontWeight: 600,
+    fontFamily: '"Roboto Condensed", sans-serif',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 1.5,
+    borderRadius: 1,
+  } as const;
 
   // Build the login method description
   let loginMethodText = '';
@@ -285,8 +392,8 @@ const Login: React.FC = () => {
         {/* OAuth Buttons */}
         {hasOAuth && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, alignItems: 'center', mb: 2 }}>
-            {/* Google Login Button */}
-            {showGoogle && authConfig.google_client_id && (
+            {/* Google Login (always popup — no client-side redirect available) */}
+            {showGoogle && authConfig?.google_client_id && (
               <GoogleOAuthProvider clientId={authConfig.google_client_id}>
                 <Box sx={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
                   <GoogleLogin
@@ -301,40 +408,16 @@ const Login: React.FC = () => {
               </GoogleOAuthProvider>
             )}
 
-            {/* Microsoft Login Button */}
+            {/* Microsoft Login (popup or redirect based on auth_flow_type) */}
             {showMicrosoft && (
               <Button
                 variant="outlined"
                 onClick={handleMicrosoftLogin}
                 disabled={loading || !msalInitialized}
                 fullWidth
-                sx={{
-                  borderColor: primaryColor,
-                  color: primaryColor,
-                  borderWidth: '1.5px',
-                  '&:hover': {
-                    borderColor: primaryColor,
-                    borderWidth: '1.5px',
-                    backgroundColor: `${primaryColor}0a`,
-                  },
-                  textTransform: 'none',
-                  fontSize: '15px',
-                  padding: '11px 24px',
-                  fontWeight: 600,
-                  fontFamily: '"Roboto Condensed", sans-serif',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 1.5,
-                  borderRadius: 1,
-                }}
+                sx={oauthButtonSx}
               >
-                <svg width="21" height="21" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg">
-                  <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
-                  <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
-                  <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
-                  <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
-                </svg>
+                <MicrosoftIcon />
                 Sign in with Microsoft
               </Button>
             )}

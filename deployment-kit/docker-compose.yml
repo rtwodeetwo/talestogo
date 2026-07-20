@@ -33,16 +33,17 @@ services:
       - ENABLE_MICROSOFT_AUTH=${ENABLE_MICROSOFT_AUTH:-true}
       - ENABLE_GOOGLE_AUTH=${ENABLE_GOOGLE_AUTH:-false}
 
-      # OIDC/OAuth (for Microsoft Entra ID)
+      # OIDC/OAuth (for Microsoft Entra ID — no secret needed, uses PKCE)
       - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-${MICROSOFT_CLIENT_ID:-}}
-      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-${MICROSOFT_CLIENT_SECRET:-}}
       - OIDC_DISCOVERY_URL=${OIDC_DISCOVERY_URL:-https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration}
       - MICROSOFT_CLIENT_ID=${OIDC_CLIENT_ID:-${MICROSOFT_CLIENT_ID:-}}
-      - MICROSOFT_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-${MICROSOFT_CLIENT_SECRET:-}}
+
+      # OAuth flow configuration
+      - AUTH_FLOW_TYPE=${AUTH_FLOW_TYPE:-popup}
+      - AUTO_LOGIN_MICROSOFT=${AUTO_LOGIN_MICROSOFT:-false}
 
       # Google OAuth (optional)
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
 
       # Branding (customize for your organization)
       - SITE_NAME=${SITE_NAME:-Tales}

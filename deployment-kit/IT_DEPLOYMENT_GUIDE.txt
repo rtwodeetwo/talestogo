@@ -422,27 +422,24 @@ Tales supports Google and Microsoft OAuth for user authentication. This is optio
 1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
 2. Create a new OAuth 2.0 Client ID
 3. Set authorized JavaScript origins: `http://your-tales-url`
-4. Set authorized redirect URIs: `http://your-tales-url/auth/callback`
-5. Add to your `.env`:
+4. Add to your `.env`:
 
 ```bash
+ENABLE_GOOGLE_AUTH=true
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
-VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 ```
 
 ### Microsoft OAuth Setup
 
 1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
 2. Create a new App Registration
-3. Add redirect URI: `http://your-tales-url/auth/callback`
-4. Create a client secret under Certificates & secrets
+3. Under "Authentication", add a Single-page application redirect URI: `http://your-tales-url` (e.g., `http://localhost:8080`)
+4. No client secret is needed — the app uses MSAL's client-side PKCE flow
 5. Add to your `.env`:
 
 ```bash
-MICROSOFT_CLIENT_ID=your-app-client-id
-MICROSOFT_CLIENT_SECRET=your-secret
-VITE_MICROSOFT_CLIENT_ID=your-app-client-id
+ENABLE_MICROSOFT_AUTH=true
+OIDC_CLIENT_ID=your-app-client-id
 ```
 
 After adding OAuth credentials, rebuild the container:

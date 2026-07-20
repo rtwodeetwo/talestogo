@@ -35,9 +35,28 @@ ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "true").lower() == "true"
 ENABLE_MICROSOFT_AUTH = os.getenv("ENABLE_MICROSOFT_AUTH", "true").lower() == "true"
 ENABLE_GOOGLE_AUTH = os.getenv("ENABLE_GOOGLE_AUTH", "false").lower() == "true"
 
+# OAuth Flow Type: "popup" (default) or "redirect" (MSAL loginRedirect with client-side PKCE)
+# Set AUTH_FLOW_TYPE=redirect to opt in to redirect mode (e.g., for Rapid7 InsightAppSec compatibility).
+def _resolve_auth_flow_type() -> str:
+    explicit = os.getenv("AUTH_FLOW_TYPE")
+    if explicit:
+        normalized = explicit.strip().lower()
+        if normalized not in ("popup", "redirect"):
+            import logging
+            logging.getLogger(__name__).warning(
+                f"AUTH_FLOW_TYPE={explicit!r} is not valid (must be 'popup' or 'redirect'), defaulting to 'popup'"
+            )
+            return "popup"
+        return normalized
+    return "popup"
+
+AUTH_FLOW_TYPE = _resolve_auth_flow_type()
+
+# Auto-login: when true and redirect+Microsoft is the sole auth method, skip the login page
+AUTO_LOGIN_MICROSOFT = os.getenv("AUTO_LOGIN_MICROSOFT", "false").lower() == "true"
+
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 
 # Microsoft/Entra OIDC Configuration
 # Priority: OIDC_* (PPPL standard) > ENTRA_* > MICROSOFT_* (legacy)
@@ -45,11 +64,6 @@ MICROSOFT_CLIENT_ID = (
     os.getenv("OIDC_CLIENT_ID") or
     os.getenv("ENTRA_CLIENT_ID") or
     os.getenv("MICROSOFT_CLIENT_ID")
-)
-MICROSOFT_CLIENT_SECRET = (
-    os.getenv("OIDC_CLIENT_SECRET") or
-    os.getenv("ENTRA_SECRET_KEY") or
-    os.getenv("MICROSOFT_CLIENT_SECRET")
 )
 
 # OIDC Discovery URL for lab-specific Entra tenants

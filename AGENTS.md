@@ -90,8 +90,8 @@ Required for deployment:
 
 Optional:
 - Additional LLM provider env vars beyond your primary one
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` - For Google OAuth
-- `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` - For Microsoft OAuth
+- `GOOGLE_CLIENT_ID` - For Google OAuth
+- `MICROSOFT_CLIENT_ID` (or `OIDC_CLIENT_ID`) - For Microsoft OAuth
 - `RESEND_API_KEY` - For sending invitation emails
 - `FROM_EMAIL` - Email address for sending
 - `FRONTEND_URL` - For CORS and email links

@@ -48,15 +48,16 @@ services:
       # OIDC/OAuth - PPPL naming with legacy fallback
       # OIDC_* is PPPL standard, MICROSOFT_* is legacy
       - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-${MICROSOFT_CLIENT_ID:-}}
-      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-${MICROSOFT_CLIENT_SECRET:-}}
       - OIDC_DISCOVERY_URL=${OIDC_DISCOVERY_URL:-https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration}
-      # Legacy Microsoft variables (for backwards compatibility)
+      # Legacy Microsoft variable (for backwards compatibility)
       - MICROSOFT_CLIENT_ID=${OIDC_CLIENT_ID:-${MICROSOFT_CLIENT_ID:-}}
-      - MICROSOFT_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-${MICROSOFT_CLIENT_SECRET:-}}
+
+      # OAuth flow configuration
+      - AUTH_FLOW_TYPE=${AUTH_FLOW_TYPE:-popup}
+      - AUTO_LOGIN_MICROSOFT=${AUTO_LOGIN_MICROSOFT:-false}
 
       # Google OAuth (optional)
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
 
       # Branding (lab-specific customization)
       - SITE_NAME=${SITE_NAME:-Tales}

@@ -49,12 +49,10 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 | Variable | Required | Description | Example |
 |----------|----------|-------------|---------|
 | `OIDC_CLIENT_ID` | No* | PPPL standard: Azure AD application client ID | `12345-abcde-...` |
-| `OIDC_CLIENT_SECRET` | No* | PPPL standard: Azure AD application client secret | `secret-value` |
 | `OIDC_DISCOVERY_URL` | No | OIDC discovery endpoint for tenant-specific auth | See below |
 | `MICROSOFT_CLIENT_ID` | No* | Legacy: Azure AD application client ID | `12345-abcde-...` |
-| `MICROSOFT_CLIENT_SECRET` | No* | Legacy: Azure AD application client secret | `secret-value` |
 
-*Required if using Microsoft/Entra ID authentication. `OIDC_*` variables take precedence over `MICROSOFT_*` for PPPL compliance.
+*Required if using Microsoft/Entra ID authentication. `OIDC_*` variables take precedence over `MICROSOFT_*` for PPPL compliance. No client secret is needed — authentication uses MSAL's client-side PKCE flow.
 
 **OIDC Discovery URL:**
 - Default (common): `https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration`
@@ -188,7 +186,6 @@ Requires `ENABLE_GOOGLE_AUTH=true` in addition to the variables below.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GOOGLE_CLIENT_ID` | No | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | No | Google OAuth client secret |
 
 **Setup:** https://console.cloud.google.com/apis/credentials
 
@@ -199,9 +196,10 @@ Requires `ENABLE_MICROSOFT_AUTH=true` (default) in addition to the variables bel
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MICROSOFT_CLIENT_ID` | No | Azure AD application client ID |
-| `MICROSOFT_CLIENT_SECRET` | No | Azure AD application secret |
 
 **Setup:** https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
+
+No client secret is needed — the frontend uses MSAL's client-side PKCE flow. Register `https://<your-domain>` as an authorized redirect URI in your app registration. If using `AUTH_FLOW_TYPE=redirect`, register `https://<your-domain>/login` instead.
 
 **Note:** The frontend reads OAuth client IDs from the backend's `/auth/config` endpoint at runtime, so `VITE_GOOGLE_CLIENT_ID` and `VITE_MICROSOFT_CLIENT_ID` build-time variables are no longer needed.
 
@@ -305,11 +303,9 @@ GEMINI_API_KEY=
 PERPLEXITY_API_KEY=
 AZURE_OPENAI_API_KEY=
 
-# Optional: OAuth (for Google/Microsoft login)
+# Optional: OAuth (for Google/Microsoft login — no secrets needed)
 # GOOGLE_CLIENT_ID=your-google-client-id
-# GOOGLE_CLIENT_SECRET=your-google-secret
 # MICROSOFT_CLIENT_ID=your-microsoft-client-id
-# MICROSOFT_CLIENT_SECRET=your-microsoft-secret
 
 # Optional: Email (for sending invitations)
 # RESEND_API_KEY=re_your-resend-key
