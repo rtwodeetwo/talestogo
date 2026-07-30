@@ -15,12 +15,17 @@ import {
   IconButton,
   Alert,
   CircularProgress,
+  Snackbar,
+  Menu,
+  MenuItem,
+  Chip,
 } from '@mui/material';
 import {
   Description as WordIcon,
   Download as DownloadIcon,
   Delete as DeleteIcon,
   Refresh as RefreshIcon,
+  Assessment as AssessmentIcon,
   TableChart as SpreadsheetIcon,
 } from '@mui/icons-material';
 import { DataGrid, GridActionsCellItem } from '@mui/x-data-grid';
@@ -34,6 +39,7 @@ interface Report {
   title: string;
   report_content: string;
   report_type?: string;
+  period_label?: string;
   start_date?: string;
   end_date?: string;
   total_responses: number;
@@ -43,10 +49,19 @@ interface Report {
   updated_at: string;
 }
 
+const formatReportType = (reportType?: string) => {
+  if (!reportType) return '';
+  if (reportType === 'all_data') return 'All Data';
+  return reportType.charAt(0).toUpperCase() + reportType.slice(1);
+};
+
 export default function ReportsPage() {
   const queryClient = useQueryClient();
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [reportToDelete, setReportToDelete] = useState<Report | null>(null);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [generateMenuAnchor, setGenerateMenuAnchor] = useState<null | HTMLElement>(null);
 
   // Fetch reports
   const { data: reports = [], isLoading } = useQuery({
@@ -68,6 +83,33 @@ export default function ReportsPage() {
       setReportToDelete(null);
     },
   });
+
+  // Generate a quarterly or annual report from existing analyzed data.
+  // Monthly reports stay on the automated schedule, so the menu offers only
+  // quarterly and annual.
+  const generatePeriodReportMutation = useMutation({
+    mutationFn: async (reportType: 'quarterly' | 'annual') => {
+      const response = await api.post('/tasks/generate-period-report/', { report_type: reportType });
+      return response.data;
+    },
+    onSuccess: (data) => {
+      setSnackbarMessage(data.message || 'Report generation started. This may take several minutes.');
+      setSnackbarOpen(true);
+      // Refresh reports list after a delay
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['reports'] });
+      }, 5000);
+    },
+    onError: (error: any) => {
+      setSnackbarMessage(error.response?.data?.detail || 'Failed to start report generation');
+      setSnackbarOpen(true);
+    },
+  });
+
+  const handleGenerateChoice = (reportType: 'quarterly' | 'annual') => {
+    setGenerateMenuAnchor(null);
+    generatePeriodReportMutation.mutate(reportType);
+  };
 
   const handleDeleteClick = (report: Report) => {
     setReportToDelete(report);
@@ -144,6 +186,17 @@ export default function ReportsPage() {
       minWidth: 250,
     },
     {
+      field: 'report_type',
+      headerName: 'Type',
+      width: 110,
+      valueFormatter: (params) => formatReportType(params as string | undefined),
+    },
+    {
+      field: 'period_label',
+      headerName: 'Period',
+      width: 140,
+    },
+    {
       field: 'created_at',
       headerName: 'Created',
       width: 180,
@@ -217,6 +270,28 @@ export default function ReportsPage() {
           Reports
         </Typography>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+          <Button
+            variant="outlined"
+            color="primary"
+            startIcon={generatePeriodReportMutation.isPending ? <CircularProgress size={16} /> : <AssessmentIcon />}
+            onClick={(e) => setGenerateMenuAnchor(e.currentTarget)}
+            disabled={generatePeriodReportMutation.isPending}
+            size="small"
+          >
+            {generatePeriodReportMutation.isPending ? 'Generating...' : 'Generate Report'}
+          </Button>
+          <Menu
+            anchorEl={generateMenuAnchor}
+            open={Boolean(generateMenuAnchor)}
+            onClose={() => setGenerateMenuAnchor(null)}
+          >
+            <MenuItem onClick={() => handleGenerateChoice('quarterly')}>
+              Quarterly (last complete quarter)
+            </MenuItem>
+            <MenuItem onClick={() => handleGenerateChoice('annual')}>
+              Annual (last complete year)
+            </MenuItem>
+          </Menu>
           <IconButton
             color="primary"
             onClick={() => queryClient.invalidateQueries({ queryKey: ['reports'] })}
@@ -253,6 +328,16 @@ export default function ReportsPage() {
                   <Typography variant="h6" gutterBottom>
                     {latestReport.title}
                   </Typography>
+                  {(latestReport.report_type || latestReport.period_label) && (
+                    <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+                      {latestReport.report_type && (
+                        <Chip label={formatReportType(latestReport.report_type)} size="small" color="primary" variant="outlined" />
+                      )}
+                      {latestReport.period_label && (
+                        <Chip label={latestReport.period_label} size="small" variant="outlined" />
+                      )}
+                    </Box>
+                  )}
                   <Typography variant="body2" color="text.secondary" gutterBottom>
                     Created: {formatDateEST(latestReport.created_at, 'full')}
                   </Typography>
@@ -351,6 +436,13 @@ export default function ReportsPage() {
         </DialogActions>
       </Dialog>
 
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={6000}
+        onClose={() => setSnackbarOpen(false)}
+        message={snackbarMessage}
+      />
     </Box>
   );
 }

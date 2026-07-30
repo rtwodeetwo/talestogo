@@ -190,9 +190,18 @@ def get_brand_analyzed_responses(
     return query.all()
 
 
-def get_last_calendar_month_range() -> tuple[datetime, datetime, str]:
+def get_last_calendar_month_range(now: Optional[datetime] = None) -> tuple[datetime, datetime, str]:
     """
     Get the date range for the last complete calendar month.
+
+    Boundary convention: the end date is EXCLUSIVE (first instant of the next
+    period); response filtering uses timestamp < end_date. Note that
+    app/scheduler.py get_period_date_range uses an inclusive 23:59:59 end
+    instead; the scheduler always passes explicit dates, so the two
+    conventions never mix within one report.
+
+    Args:
+        now: Injectable current time for tests; defaults to UTC now.
 
     Returns:
         Tuple of (start_date, end_date, month_name)
@@ -200,7 +209,7 @@ def get_last_calendar_month_range() -> tuple[datetime, datetime, str]:
         - end_date: First day of current month at 00:00:00 (exclusive)
         - month_name: Name of the month (e.g., "December 2024")
     """
-    today = datetime.utcnow()
+    today = now if now is not None else datetime.utcnow()
 
     # Get first day of current month
     first_of_current_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -218,7 +227,7 @@ def get_last_calendar_month_range() -> tuple[datetime, datetime, str]:
     return first_of_last_month, first_of_current_month, month_name
 
 
-def get_last_quarter_range() -> tuple[datetime, datetime, str]:
+def get_last_quarter_range(now: Optional[datetime] = None) -> tuple[datetime, datetime, str]:
     """
     Get the date range for the last complete calendar quarter.
 
@@ -228,13 +237,18 @@ def get_last_quarter_range() -> tuple[datetime, datetime, str]:
     - Q3: July 1 - September 30
     - Q4: October 1 - December 31
 
+    Boundary convention: exclusive end (see get_last_calendar_month_range).
+
+    Args:
+        now: Injectable current time for tests; defaults to UTC now.
+
     Returns:
         Tuple of (start_date, end_date, quarter_label)
         - start_date: First day of the quarter at 00:00:00
         - end_date: First day of next quarter at 00:00:00 (exclusive)
         - quarter_label: e.g., "Q4 2025"
     """
-    today = datetime.utcnow()
+    today = now if now is not None else datetime.utcnow()
     current_quarter = (today.month - 1) // 3 + 1
     current_year = today.year
 
@@ -266,9 +280,14 @@ def get_last_quarter_range() -> tuple[datetime, datetime, str]:
     return start_date, end_date, quarter_label
 
 
-def get_last_year_range() -> tuple[datetime, datetime, str]:
+def get_last_year_range(now: Optional[datetime] = None) -> tuple[datetime, datetime, str]:
     """
     Get the date range for the last complete calendar year.
+
+    Boundary convention: exclusive end (see get_last_calendar_month_range).
+
+    Args:
+        now: Injectable current time for tests; defaults to UTC now.
 
     Returns:
         Tuple of (start_date, end_date, year_label)
@@ -276,7 +295,7 @@ def get_last_year_range() -> tuple[datetime, datetime, str]:
         - end_date: January 1 of current year at 00:00:00 (exclusive)
         - year_label: e.g., "2025 Annual Report"
     """
-    today = datetime.utcnow()
+    today = now if now is not None else datetime.utcnow()
     prev_year = today.year - 1
 
     start_date = datetime(prev_year, 1, 1, 0, 0, 0)
@@ -1874,6 +1893,12 @@ def generate_markdown_report(
     if report_type == 'monthly':
         report_title = f"# {brand_name} - Monthly AI Reputation Analysis"
         period_note = f"**Analysis Period:** {period} | **Generated:** {report_date}"
+    elif report_type == 'quarterly':
+        report_title = f"# {brand_name} - Quarterly AI Reputation Analysis"
+        period_note = f"**Analysis Period:** {period} | **Generated:** {report_date}"
+    elif report_type == 'annual':
+        report_title = f"# {brand_name} - Annual AI Reputation Analysis"
+        period_note = f"**Analysis Period:** {period} | **Generated:** {report_date}"
     else:
         report_title = f"# {brand_name} - Comprehensive AI Reputation Analysis"
         period_note = f"**Analysis Period:** All Data to Date | **Generated:** {report_date}"
@@ -2210,7 +2235,8 @@ def generate_report_main(
     report_type: str = 'monthly',
     period_start: Optional[datetime] = None,
     period_end: Optional[datetime] = None,
-    period_label: Optional[str] = None
+    period_label: Optional[str] = None,
+    task_id: Optional[int] = None
 ):
     """
     Main function to generate the complete report for a specific brand.
@@ -2222,6 +2248,8 @@ def generate_report_main(
         period_start: Optional custom period start date (overrides automatic calculation)
         period_end: Optional custom period end date (overrides automatic calculation)
         period_label: Optional custom period label (e.g., "Q1 2026", "2025 Annual Report")
+        task_id: Optional TaskStatus id to report progress on. When omitted, the
+            most recent analysis_and_report task for the user/brand is used.
     """
     print(f"Starting TALES Report Generation for Brand ID {brand_id}...")
     print(f"Report Type: {report_type}")
@@ -2232,12 +2260,16 @@ def generate_report_main(
     task = None  # Initialize to avoid UnboundLocalError
 
     try:
-        # Get the most recent task for this user and brand
-        task = db.query(TaskStatus).filter(
-            TaskStatus.user_id == user_id,
-            TaskStatus.brand_id == brand_id,
-            TaskStatus.task_type == "analysis_and_report"
-        ).order_by(TaskStatus.started_at.desc()).first()
+        if task_id:
+            # Exact task handed to us by the caller (e.g. the period-report endpoint)
+            task = db.query(TaskStatus).filter(TaskStatus.id == task_id).first()
+        else:
+            # Get the most recent task for this user and brand
+            task = db.query(TaskStatus).filter(
+                TaskStatus.user_id == user_id,
+                TaskStatus.brand_id == brand_id,
+                TaskStatus.task_type == "analysis_and_report"
+            ).order_by(TaskStatus.started_at.desc()).first()
 
         # Get brand info
         brand_info = get_brand_info(db, brand_id)
@@ -2316,12 +2348,16 @@ def generate_report_main(
             batch_ids, month_name = get_last_month_batch_ids(db, user_id, brand_id)
             print(f"  - Found {len(batch_ids)} collection batches for {month_name}")
 
+            # Always record the month's date range on the Report row, even when
+            # batch IDs drive response selection. The CSV export filters by
+            # start_date/end_date, so leaving them NULL would export all data.
+            start_date, end_date, _ = get_last_calendar_month_range()
+
             if batch_ids:
                 responses = get_brand_analyzed_responses(db, user_id, brand_id, batch_ids=batch_ids)
             else:
                 # Fallback: use date-based filtering if no batches found
                 print(f"  - No batches found for {month_name}, using date range filtering")
-                start_date, end_date, _ = get_last_calendar_month_range()
                 responses = get_brand_analyzed_responses(db, user_id, brand_id, start_date=start_date, end_date=end_date)
 
             # Get historical summary for context
@@ -2699,7 +2735,12 @@ def generate_report_main(
             end_date=end_date,
             report_content=markdown_report,
             total_responses=len(responses),
-            mention_rate=metrics_summary.get('mention_rate', 0),
+            # Rate over all analyzed responses in the period (Yes + Indirect).
+            # Note: unlike the dashboard, this does not exclude branded queries.
+            mention_rate=round(
+                ((mention_metrics.get('yes', 0) + mention_metrics.get('indirect', 0))
+                 / mention_metrics['total']) * 100, 1
+            ) if mention_metrics.get('total') else 0,
         )
 
         db.add(report_obj)
@@ -2758,6 +2799,8 @@ if __name__ == "__main__":
                         help='Custom period end date (ISO format: 2026-03-31T23:59:59)')
     parser.add_argument('--period-label', type=str, default=None,
                         help='Custom period label (e.g., "Q1 2026", "January 2026")')
+    parser.add_argument('--task-id', type=int, default=None,
+                        help='TaskStatus id to report progress on (created by the caller)')
     args = parser.parse_args()
 
     # Parse period dates if provided
@@ -2774,5 +2817,6 @@ if __name__ == "__main__":
         args.report_type,
         period_start=period_start,
         period_end=period_end,
-        period_label=args.period_label
+        period_label=args.period_label,
+        task_id=args.task_id
     )
