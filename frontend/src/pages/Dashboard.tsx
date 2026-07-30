@@ -41,6 +41,9 @@ interface DashboardMetrics {
   leading_position: string;
   collection_date?: string;
   previous_collection_date?: string;
+  comparison_mode?: string;
+  period_label?: string;
+  previous_period_label?: string;
 }
 
 export default function Dashboard() {
@@ -56,6 +59,11 @@ export default function Dashboard() {
   });
   const [collectionStatus, setCollectionStatus] = useState<'idle' | 'running'>('idle');
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
+  // Comparison mode: 'batch' (default, batch-over-batch), 'month' (month-over-month),
+  // or 'quarter' (quarter-over-quarter). periodStart ("YYYY-MM-DD") pins a specific
+  // month/quarter; null means the latest complete period.
+  const [comparisonMode, setComparisonMode] = useState<'batch' | 'month' | 'quarter'>('batch');
+  const [periodStart, setPeriodStart] = useState<string | null>(null);
   const [dismissedTaskId, setDismissedTaskId] = useState<number | null>(null);
 
   // Minimum loading time to ensure smooth UX
@@ -140,7 +148,23 @@ export default function Dashboard() {
   useEffect(() => {
     setBatchInitialized(false);
     setSelectedBatchId(null);
+    setComparisonMode('batch');
+    setPeriodStart(null);
   }, [activeBrand?.id]);
+
+  // Fetch the list of complete months/quarters that have data, for the dropdown.
+  const { data: availablePeriods } = useQuery({
+    queryKey: ['available-periods', activeBrand?.id],
+    queryFn: async () => {
+      const params = activeBrand?.id ? { brand_id: activeBrand.id } : {};
+      const response = await api.get('/api/analytics/available-periods', { params });
+      return response.data as {
+        months: { period_start: string; label: string }[];
+        quarters: { period_start: string; label: string }[];
+      };
+    },
+    enabled: !!activeBrand,
+  });
 
   // Set default to latest batch when batches load
   // IMPORTANT: Include batchesLoading to ensure we wait for the query to complete
@@ -175,9 +199,11 @@ export default function Dashboard() {
 
   // Fetch dashboard metrics - only after brand is loaded and batch selection is initialized
   const { data: metrics, isLoading: metricsLoading, error } = useQuery<DashboardMetrics>({
-    queryKey: ['dashboard-metrics', activeBrand?.id, selectedBatchId],
+    queryKey: ['dashboard-metrics', activeBrand?.id, selectedBatchId, comparisonMode, periodStart],
     queryFn: async () => {
-      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const params = comparisonMode !== 'batch'
+        ? { period: comparisonMode, ...(periodStart ? { period_start: periodStart } : {}) }
+        : (selectedBatchId ? { batch_id: selectedBatchId } : {});
       const response = await api.get('/api/analytics/dashboard', { params });
       return response.data;
     },
@@ -191,9 +217,11 @@ export default function Dashboard() {
 
   // Fetch sentiment breakdown - only after brand is loaded and batch selection is initialized
   const { data: sentimentData } = useQuery({
-    queryKey: ['sentiment-breakdown', activeBrand?.id, selectedBatchId],
+    queryKey: ['sentiment-breakdown', activeBrand?.id, selectedBatchId, comparisonMode, periodStart],
     queryFn: async () => {
-      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const params = comparisonMode !== 'batch'
+        ? { period: comparisonMode, ...(periodStart ? { period_start: periodStart } : {}) }
+        : (selectedBatchId ? { batch_id: selectedBatchId } : {});
       const response = await api.get('/api/analytics/sentiment/breakdown', { params });
       return response.data;
     },
@@ -202,9 +230,11 @@ export default function Dashboard() {
 
   // Fetch share of voice - only after brand is loaded and batch selection is initialized
   const { data: shareOfVoice } = useQuery({
-    queryKey: ['share-of-voice-dashboard', activeBrand?.id, selectedBatchId],
+    queryKey: ['share-of-voice-dashboard', activeBrand?.id, selectedBatchId, comparisonMode, periodStart],
     queryFn: async () => {
-      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const params = comparisonMode !== 'batch'
+        ? { period: comparisonMode, ...(periodStart ? { period_start: periodStart } : {}) }
+        : (selectedBatchId ? { batch_id: selectedBatchId } : {});
       const response = await api.get('/api/analytics/share-of-voice', { params });
       return response.data;
     },
@@ -213,9 +243,11 @@ export default function Dashboard() {
 
   // Fetch positioning data - only after brand is loaded and batch selection is initialized
   const { data: positioningData } = useQuery({
-    queryKey: ['positioning-dashboard', activeBrand?.id, selectedBatchId],
+    queryKey: ['positioning-dashboard', activeBrand?.id, selectedBatchId, comparisonMode, periodStart],
     queryFn: async () => {
-      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const params = comparisonMode !== 'batch'
+        ? { period: comparisonMode, ...(periodStart ? { period_start: periodStart } : {}) }
+        : (selectedBatchId ? { batch_id: selectedBatchId } : {});
       const response = await api.get('/api/analytics/positioning/breakdown', { params });
       return response.data;
     },
@@ -224,9 +256,11 @@ export default function Dashboard() {
 
   // Fetch competitor threats (calculated server-side) - only after brand is loaded and batch selection is initialized
   const { data: competitorThreats } = useQuery({
-    queryKey: ['competitor-threats-dashboard', activeBrand?.id, selectedBatchId],
+    queryKey: ['competitor-threats-dashboard', activeBrand?.id, selectedBatchId, comparisonMode, periodStart],
     queryFn: async () => {
-      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const params = comparisonMode !== 'batch'
+        ? { period: comparisonMode, ...(periodStart ? { period_start: periodStart } : {}) }
+        : (selectedBatchId ? { batch_id: selectedBatchId } : {});
       const response = await api.get('/api/analytics/competitor-threats', { params });
       return response.data;
     },
@@ -379,12 +413,26 @@ export default function Dashboard() {
     return null;
   }
 
+  // In a period-over-period mode (month or quarter), compare against the named
+  // previous period (e.g. "vs May 2026" / "vs Q1 2026"); otherwise use "vs last period".
+  const isPeriodMode = comparisonMode !== 'batch';
+  const periodSuffix = isPeriodMode && metrics.previous_period_label
+    ? ` vs ${metrics.previous_period_label}`
+    : ' vs last period';
+
   // Format change indicators
   const formatChange = (value: number, previousDate?: string) => {
     if (value === 0) return null;
     const sign = value > 0 ? '↑' : '↓';
     const color = value > 0 ? 'success.main' : 'error.main';
-    const dateText = previousDate ? ` vs ${formatDateEST(previousDate, 'short')}` : ' vs last period';
+    let dateText: string;
+    if (isPeriodMode) {
+      dateText = periodSuffix;
+    } else if (previousDate) {
+      dateText = ` vs ${formatDateEST(previousDate, 'short')}`;
+    } else {
+      dateText = ' vs last period';
+    }
     return (
       <Typography variant="body2" color={color}>
         {sign} {value > 0 ? '+' : ''}{Math.round(value)}%{dateText}
@@ -424,15 +472,23 @@ export default function Dashboard() {
       )}
 
       <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'center' }, flexDirection: { xs: 'column', sm: 'row' }, gap: 2 }}>
-        <Typography variant="h2" component="h1">
-          Key Metrics Dashboard
-        </Typography>
+        <Box>
+          <Typography variant="h2" component="h1">
+            Key Metrics Dashboard
+          </Typography>
+          <Typography variant="subtitle1" color="primary" sx={{ fontWeight: 600, mt: 0.5 }}>
+            {brandName}
+          </Typography>
+        </Box>
         <Box sx={{ display: 'flex', gap: { xs: 1, sm: 2 }, alignItems: 'center', flexWrap: 'wrap', width: { xs: '100%', sm: 'auto' } }}>
           <Box sx={{ minWidth: { xs: '100%', sm: 250, md: 300 }, flexGrow: { xs: 1, sm: 0 } }}>
             <BatchSelector
               selectedBatchId={selectedBatchId}
-              onBatchChange={setSelectedBatchId}
+              onBatchChange={(id) => { setComparisonMode('batch'); setPeriodStart(null); setSelectedBatchId(id); }}
               showAllOption={true}
+              periodOptions={availablePeriods}
+              selectedPeriod={comparisonMode !== 'batch' && periodStart ? { type: comparisonMode, start: periodStart } : null}
+              onPeriodChange={(type, start) => { setComparisonMode(type); setPeriodStart(start); setSelectedBatchId(null); }}
               label="Filter by Collection"
             />
           </Box>
@@ -486,7 +542,9 @@ export default function Dashboard() {
               <Box display="flex" alignItems="center" justifyContent="space-between">
                 <Box>
                   <Typography color="textSecondary" gutterBottom variant="body2">
-                    Brand Mentions {metrics.collection_date && `on ${formatDateEST(metrics.collection_date, 'short')}`}
+                    Brand Mentions {isPeriodMode
+                      ? (metrics.period_label ? `in ${metrics.period_label}` : '')
+                      : (metrics.collection_date && `on ${formatDateEST(metrics.collection_date, 'short')}`)}
                   </Typography>
                   <Typography variant="h4" component="div" color="primary">
                     {Math.round(metrics.mention_rate ?? 0)}%
@@ -523,11 +581,11 @@ export default function Dashboard() {
                   {metrics.change_high_threats !== null && metrics.change_high_threats !== undefined ? (
                     metrics.change_high_threats === 0 ? (
                       <Typography variant="body2" color="textSecondary">
-                        No change vs last period
+                        No change{periodSuffix}
                       </Typography>
                     ) : (
                       <Typography variant="body2" color={metrics.change_high_threats > 0 ? 'error.main' : 'success.main'}>
-                        {metrics.change_high_threats > 0 ? '↑' : '↓'} {metrics.change_high_threats > 0 ? '+' : ''}{metrics.change_high_threats} vs last period
+                        {metrics.change_high_threats > 0 ? '↑' : '↓'} {metrics.change_high_threats > 0 ? '+' : ''}{metrics.change_high_threats}{periodSuffix}
                       </Typography>
                     )
                   ) : (
@@ -574,11 +632,11 @@ export default function Dashboard() {
                   </Typography>
                   {metrics.change_share_of_voice === 0 ? (
                     <Typography variant="body2" color="textSecondary">
-                      No change vs last period
+                      No change{periodSuffix}
                     </Typography>
                   ) : (
                     <Typography variant="body2" color={metrics.change_share_of_voice > 0 ? 'success.main' : 'error.main'}>
-                      {metrics.change_share_of_voice > 0 ? '↑' : '↓'} {metrics.change_share_of_voice > 0 ? '+' : ''}{Math.round(metrics.change_share_of_voice)}% vs last period
+                      {metrics.change_share_of_voice > 0 ? '↑' : '↓'} {metrics.change_share_of_voice > 0 ? '+' : ''}{Math.round(metrics.change_share_of_voice)}%{periodSuffix}
                     </Typography>
                   )}
                 </Box>
@@ -603,7 +661,7 @@ export default function Dashboard() {
                 </Typography>
                 {metrics.change_sentiment !== 0 && (
                   <Typography variant="caption" color={metrics.change_sentiment > 0 ? 'success.main' : 'error.main'}>
-                    {metrics.change_sentiment > 0 ? '↑' : '↓'} {metrics.change_sentiment > 0 ? '+' : ''}{Math.round(metrics.change_sentiment)}% vs last period
+                    {metrics.change_sentiment > 0 ? '↑' : '↓'} {metrics.change_sentiment > 0 ? '+' : ''}{Math.round(metrics.change_sentiment)}%{periodSuffix}
                   </Typography>
                 )}
               </Box>
@@ -673,7 +731,7 @@ export default function Dashboard() {
                 </Typography>
                 {metrics.change_leadership_visibility !== 0 && (
                   <Typography variant="caption" color={metrics.change_leadership_visibility > 0 ? 'success.main' : 'error.main'}>
-                    {metrics.change_leadership_visibility > 0 ? '↑' : '↓'} {metrics.change_leadership_visibility > 0 ? '+' : ''}{Math.round(metrics.change_leadership_visibility)}% vs last period
+                    {metrics.change_leadership_visibility > 0 ? '↑' : '↓'} {metrics.change_leadership_visibility > 0 ? '+' : ''}{Math.round(metrics.change_leadership_visibility)}%{periodSuffix}
                   </Typography>
                 )}
               </Box>

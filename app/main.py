@@ -106,6 +106,11 @@ if "llm_providers" in _inspector.get_table_names():
     if "bing_connection_name" not in _existing_cols:
         with engine.begin() as _conn:
             _conn.execute(text("ALTER TABLE llm_providers ADD COLUMN bing_connection_name VARCHAR(200)"))
+if "brand_info" in _inspector.get_table_names():
+    _existing_cols = {c["name"] for c in _inspector.get_columns("brand_info")}
+    if "fiscal_year_start_month" not in _existing_cols:
+        with engine.begin() as _conn:
+            _conn.execute(text("ALTER TABLE brand_info ADD COLUMN fiscal_year_start_month INTEGER NOT NULL DEFAULT 1"))
 if "responses" in _inspector.get_table_names() and engine.dialect.name == "postgresql":
     with engine.begin() as _conn:
         _conn.execute(text("ALTER TABLE responses ALTER COLUMN platform TYPE VARCHAR(100)"))
