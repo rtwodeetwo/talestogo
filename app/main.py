@@ -91,6 +91,7 @@ from app.routers import (
     migration_helper,  # Temporary migration helper
     llm_providers,  # LLM Provider configuration for Lab deployments
     site,  # Site configuration and branding for Lab deployments
+    highlights,  # Periodic highlights emails (monthly/quarterly)
 )
 
 # This line ensures tables are created if they don't exist when the app starts.
@@ -265,6 +266,7 @@ app.include_router(batches.router)
 app.include_router(scheduled_tasks.router)
 app.include_router(help.router)
 app.include_router(tasks.router)
+app.include_router(highlights.router)  # Periodic highlights emails
 
 # Temporary migration helper (will be removed after rollback)
 app.include_router(migration_helper.router)
