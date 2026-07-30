@@ -20,6 +20,12 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..services.analytics_cache import AnalyticsCache
 from ..services.metrics import calculate_share_of_voice, calculate_competitor_threats
+from ..services.period_ranges import (
+    brand_fiscal_start_month,
+    fiscal_quarter_label,
+    get_period_comparison_ranges,
+    parse_period_start,
+)
 from ..services.redis_cache import get_redis_cache
 from ..utils.brand_access import get_active_brand_id, get_data_owner_user_id
 from ..services.llm_provider_manager import LLMProviderManager
@@ -59,21 +65,137 @@ def get_platform_config(
     )
 
 
+def _high_threat_count_for_range(
+    db: Session, owner_user_id: int, brand_id: Optional[int],
+    start: datetime, end: datetime
+) -> int:
+    """
+    Count high-threat competitors within a date range, using the same
+    share-of-voice / threat calculation as the /competitor-threats endpoint
+    so the number matches what the Threats card displays.
+    """
+    query = db.query(models.Response).filter(models.Response.user_id == owner_user_id)
+    if brand_id:
+        query = query.filter(models.Response.brand_id == brand_id)
+    query = query.filter(
+        models.Response.timestamp >= start,
+        models.Response.timestamp <= end
+    )
+    responses = query.all()
+    if not responses:
+        return 0
+
+    queries_query = db.query(models.Query).filter(models.Query.user_id == owner_user_id)
+    if brand_id:
+        queries_query = queries_query.filter(models.Query.brand_id == brand_id)
+    queries = queries_query.all()
+
+    competitors_query = db.query(models.Competitor).filter(models.Competitor.user_id == owner_user_id)
+    if brand_id:
+        competitors_query = competitors_query.filter(models.Competitor.brand_id == brand_id)
+    competitors = competitors_query.all()
+
+    brand_query = db.query(models.BrandInfo).filter(models.BrandInfo.user_id == owner_user_id)
+    if brand_id:
+        brand_query = brand_query.filter(models.BrandInfo.id == brand_id)
+    brand = brand_query.first()
+    brand_name = brand.brand_name if brand else "Your Brand"
+
+    sov_data = calculate_share_of_voice(responses, queries, competitors, brand_name)
+    threats = calculate_competitor_threats(sov_data['competitor_sov'], responses, brand_name)
+    return sum(1 for c in threats if c.get('threat_level') == 'High')
+
+
+def _get_period_over_period_dashboard(
+    db: Session, owner_user_id: int, brand_id: Optional[int], period: str,
+    period_start: Optional[datetime] = None
+) -> Dict[str, Any]:
+    """
+    Build the dashboard payload comparing a period (month or quarter) against the
+    one before it, aggregating ALL responses in each period (not batch-by-batch).
+    If period_start is given, that specific period is used; otherwise the last
+    complete period.
+    """
+    (cur_start, cur_end, cur_label,
+     prev_start, prev_end, prev_label) = get_period_comparison_ranges(
+        db, owner_user_id, brand_id, period, period_start)
+
+    cur_cache = AnalyticsCache(
+        db, user_id=owner_user_id, brand_id=brand_id,
+        date_from=cur_start, date_to=cur_end
+    )
+    prev_cache = AnalyticsCache(
+        db, user_id=owner_user_id, brand_id=brand_id,
+        date_from=prev_start, date_to=prev_end
+    )
+    cur = cur_cache.get_dashboard_data()
+    prev = prev_cache.get_dashboard_data()
+
+    def delta(key: str) -> int:
+        return round((cur.get(key, 0) or 0) - (prev.get(key, 0) or 0))
+
+    def brand_leadership_visibility(cache: AnalyticsCache) -> float:
+        sov = cache.get_share_of_voice_data()
+        brand_row = next((row for row in sov if row.get('is_brand')), None)
+        return brand_row.get('leadership_visibility', 0) if brand_row else 0
+
+    change_leadership_visibility = round(
+        brand_leadership_visibility(cur_cache) - brand_leadership_visibility(prev_cache)
+    )
+
+    # High-threat competitor delta (headline period vs baseline period)
+    cur_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, cur_start, cur_end)
+    prev_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, prev_start, prev_end)
+    change_high_threats = cur_high_threats - prev_high_threats
+
+    return {
+        'mention_rate': cur.get('mention_rate', 0),
+        'mention_count': cur.get('mention_count', 0),
+        'total_responses': cur.get('total_responses', 0),
+        'positive_sentiment': cur.get('positive_sentiment', 0),
+        'descriptor_match': cur.get('descriptor_match', 0),
+        'share_of_voice': cur.get('share_of_voice', 0),
+        'change_mention_rate': delta('mention_rate'),
+        'change_sentiment': delta('positive_sentiment'),
+        'change_descriptor': delta('descriptor_match'),
+        'change_share_of_voice': delta('share_of_voice'),
+        'change_high_threats': change_high_threats,
+        'change_leadership_visibility': change_leadership_visibility,
+        'leading_position': cur.get('leading_position', 'N/A'),
+        'comparison_mode': period,
+        'period_label': cur_label,
+        'previous_period_label': prev_label,
+        'collection_date': None,
+        'previous_collection_date': None,
+    }
+
+
 @router.get("/dashboard", response_model=Dict[str, Any])
 def get_dashboard_analytics(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id),
-    batch_id: Optional[int] = None
+    batch_id: Optional[int] = None,
+    period: Optional[str] = None,
+    period_start: Optional[str] = None
 ):
     """
     Get key metrics for the dashboard for the active brand.
 
     Uses BatchAnalytics for basic metrics (mention_rate, sentiment, positioning)
     and AnalyticsCache for descriptor_match and share_of_voice calculations.
-    Optionally filter by batch_id for specific collection batches.
+    Optionally filter by batch_id for specific collection batches, or pass
+    period="month" / period="quarter" for a period-over-period comparison.
+    period_start ("YYYY-MM-DD") picks a specific month/quarter; if omitted, the
+    last complete period is used.
     """
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+
+    # Period-over-period mode: aggregate a whole period (month or quarter) vs the
+    # one before it, instead of the batch-over-batch default.
+    if period in ('month', 'quarter'):
+        return _get_period_over_period_dashboard(
+            db, owner_user_id, brand_id, period, parse_period_start(period_start))
 
     # Get the batch to use - either specified or latest
     if batch_id:
@@ -214,15 +336,28 @@ def get_sentiment_analysis(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id),
-    batch_id: Optional[int] = None
+    batch_id: Optional[int] = None,
+    period: Optional[str] = None,
+    period_start: Optional[str] = None
 ):
     """
     Get sentiment distribution for brand mentions.
     Uses centralized AnalyticsCache to avoid redundant calculations.
     Redis caching with 15-minute TTL for improved performance.
-    Optionally filter by batch_id for specific collection batches.
+    Optionally filter by batch_id for specific collection batches, or pass
+    period="month" / period="quarter" (with optional period_start) to view a
+    whole period.
     """
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+
+    # Period mode: return the windowed result directly. The Redis cache keys are
+    # batch-scoped, so period mode must bypass both cache read and write.
+    if period in ('month', 'quarter'):
+        cur_start, cur_end, *_ = get_period_comparison_ranges(
+            db, owner_user_id, brand_id, period, parse_period_start(period_start))
+        cache = AnalyticsCache(db, user_id=owner_user_id, brand_id=brand_id,
+                               date_from=cur_start, date_to=cur_end)
+        return cache.get_sentiment_data()
 
     # Try Redis cache first
     redis_cache = get_redis_cache()
@@ -258,15 +393,27 @@ def get_positioning_analysis(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id),
-    batch_id: Optional[int] = None
+    batch_id: Optional[int] = None,
+    period: Optional[str] = None,
+    period_start: Optional[str] = None
 ):
     """
     Get brand positioning distribution across responses.
     Uses centralized AnalyticsCache to avoid redundant calculations.
     Redis caching with 15-minute TTL for improved performance.
-    Optionally filter by batch_id for specific collection batches.
+    Optionally filter by batch_id for specific collection batches, or pass
+    period="month" / period="quarter" (with optional period_start) to view a
+    whole period.
     """
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+
+    # Period mode bypasses the batch-scoped Redis cache entirely.
+    if period in ('month', 'quarter'):
+        cur_start, cur_end, *_ = get_period_comparison_ranges(
+            db, owner_user_id, brand_id, period, parse_period_start(period_start))
+        cache = AnalyticsCache(db, user_id=owner_user_id, brand_id=brand_id,
+                               date_from=cur_start, date_to=cur_end)
+        return cache.get_positioning_data()
 
     # Try Redis cache first
     redis_cache = get_redis_cache()
@@ -289,15 +436,27 @@ def get_share_of_voice_analysis(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id),
-    batch_id: Optional[int] = None
+    batch_id: Optional[int] = None,
+    period: Optional[str] = None,
+    period_start: Optional[str] = None
 ):
     """
     Get share of voice comparison between brand and competitors.
     Uses centralized AnalyticsCache to avoid redundant calculations.
     Redis caching with 15-minute TTL for improved performance.
-    Optionally filter by batch_id for specific collection batches.
+    Optionally filter by batch_id for specific collection batches, or pass
+    period="month" / period="quarter" (with optional period_start) to view a
+    whole period.
     """
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+
+    # Period mode bypasses the batch-scoped Redis cache entirely.
+    if period in ('month', 'quarter'):
+        cur_start, cur_end, *_ = get_period_comparison_ranges(
+            db, owner_user_id, brand_id, period, parse_period_start(period_start))
+        cache = AnalyticsCache(db, user_id=owner_user_id, brand_id=brand_id,
+                               date_from=cur_start, date_to=cur_end)
+        return cache.get_share_of_voice_data()
 
     # Try Redis cache first
     redis_cache = get_redis_cache()
@@ -428,11 +587,15 @@ def get_competitor_threats_analysis(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id),
-    batch_id: Optional[int] = None
+    batch_id: Optional[int] = None,
+    period: Optional[str] = None,
+    period_start: Optional[str] = None
 ):
     """
     Get competitor threat analysis with threat scores.
-    Optionally filter by batch_id for specific collection batches.
+    Optionally filter by batch_id for specific collection batches, or pass
+    period="month" / period="quarter" (with optional period_start) to view a
+    whole period.
 
     Returns a list of competitors sorted by threat level (highest first).
     Each competitor includes:
@@ -448,7 +611,14 @@ def get_competitor_threats_analysis(
     query = db.query(models.Response).filter(models.Response.user_id == owner_user_id)
     if brand_id:
         query = query.filter(models.Response.brand_id == brand_id)
-    if batch_id:
+    if period in ('month', 'quarter'):
+        cur_start, cur_end, *_ = get_period_comparison_ranges(
+            db, owner_user_id, brand_id, period, parse_period_start(period_start))
+        query = query.filter(
+            models.Response.timestamp >= cur_start,
+            models.Response.timestamp <= cur_end
+        )
+    elif batch_id:
         query = query.filter(models.Response.batch_id == batch_id)
 
     responses = query.all()
@@ -486,6 +656,63 @@ def get_competitor_threats_analysis(
     )
 
     return competitor_threats
+
+
+@router.get("/available-periods", response_model=Dict[str, Any])
+def get_available_periods(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+    brand_id: Optional[int] = Depends(get_active_brand_id),
+):
+    """
+    List the complete months and quarters that have response data for the active
+    brand, most recent first, for the dashboard's period dropdown. Each entry has
+    a period_start ("YYYY-MM-DD", first day of the period) and a display label.
+    Quarter labels respect the brand's fiscal-year start month. The current
+    in-progress period is excluded (it is incomplete).
+    """
+    from sqlalchemy import func
+
+    owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+    fiscal_start_month = brand_fiscal_start_month(db, brand_id)
+
+    q = db.query(
+        func.extract('year', models.Response.timestamp).label('y'),
+        func.extract('month', models.Response.timestamp).label('m'),
+    ).filter(
+        models.Response.user_id == owner_user_id,
+        models.Response.timestamp.isnot(None),
+    )
+    if brand_id:
+        q = q.filter(models.Response.brand_id == brand_id)
+    month_pairs = {(int(y), int(m)) for y, m in q.distinct().all()}
+
+    now = datetime.utcnow()
+    cur_month_abs = now.year * 12 + (now.month - 1)
+    cur_quarter_abs = now.year * 4 + (now.month - 1) // 3
+
+    months = []
+    for (year, month) in month_pairs:
+        if year * 12 + (month - 1) >= cur_month_abs:
+            continue  # skip the in-progress current month (and any future)
+        start = datetime(year, month, 1)
+        months.append({'period_start': start.strftime('%Y-%m-%d'),
+                       'label': start.strftime('%B %Y')})
+    months.sort(key=lambda d: d['period_start'], reverse=True)
+
+    quarter_abs = {year * 4 + (month - 1) // 3 for (year, month) in month_pairs}
+    quarters = []
+    for q_abs in quarter_abs:
+        if q_abs >= cur_quarter_abs:
+            continue  # skip the in-progress current quarter
+        year, qi = q_abs // 4, q_abs % 4
+        start_month = qi * 3 + 1
+        start = datetime(year, start_month, 1)
+        quarters.append({'period_start': start.strftime('%Y-%m-%d'),
+                         'label': fiscal_quarter_label(fiscal_start_month, start_month, year)})
+    quarters.sort(key=lambda d: d['period_start'], reverse=True)
+
+    return {'months': months, 'quarters': quarters}
 
 
 @router.get("/trends/brand-mentions", response_model=List[Dict[str, Any]])

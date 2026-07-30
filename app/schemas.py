@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from typing import Optional, List
 import datetime
 
@@ -358,6 +358,14 @@ class BrandInfoBase(BaseModel):
     industry: Optional[str] = None
     description: Optional[str] = None
     strategic_messages: Optional[str] = None
+    fiscal_year_start_month: int = 1  # 1 = calendar year, 10 = US federal fiscal year; drives quarter labels
+
+    @field_validator('fiscal_year_start_month')
+    @classmethod
+    def fiscal_start_must_be_quarter_aligned(cls, v: int) -> int:
+        if v not in (1, 4, 7, 10):
+            raise ValueError('fiscal_year_start_month must be 1, 4, 7, or 10 (quarter-aligned)')
+        return v
 
 class BrandInfoCreate(BrandInfoBase):
     pass
@@ -369,7 +377,15 @@ class BrandInfoUpdate(BaseModel):
     description: Optional[str] = None
     strategic_messages: Optional[str] = None
     is_active: Optional[bool] = None
+    fiscal_year_start_month: Optional[int] = None
     model_config = ConfigDict(extra='forbid')
+
+    @field_validator('fiscal_year_start_month')
+    @classmethod
+    def fiscal_start_must_be_quarter_aligned(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v not in (1, 4, 7, 10):
+            raise ValueError('fiscal_year_start_month must be 1, 4, 7, or 10 (quarter-aligned)')
+        return v
 
 class BrandInfo(BrandInfoBase):
     id: int

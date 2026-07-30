@@ -5,6 +5,7 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  ListSubheader,
   CircularProgress,
   Typography,
 } from '@mui/material';
@@ -25,12 +26,28 @@ export interface CollectionBatch {
   description: string | null;
 }
 
+export interface PeriodOption {
+  period_start: string;  // "YYYY-MM-DD", first day of the period
+  label: string;         // e.g. "June 2026" or "FY2026 Q3"
+}
+
+export interface SelectedPeriod {
+  type: 'month' | 'quarter';
+  start: string;         // matches a PeriodOption.period_start
+}
+
 interface BatchSelectorProps {
   selectedBatchId: number | null;
   onBatchChange: (batchId: number | null, batch?: CollectionBatch | null) => void;
   showAllOption?: boolean;
   label?: string;
   autoSelectLatest?: boolean;
+  /** Selectable month/quarter periods for period-over-period comparison. */
+  periodOptions?: { months?: PeriodOption[]; quarters?: PeriodOption[] };
+  /** The currently active period, or null when a batch / All Data is selected. */
+  selectedPeriod?: SelectedPeriod | null;
+  /** Called when the user picks a specific month or quarter. */
+  onPeriodChange?: (type: 'month' | 'quarter', start: string) => void;
 }
 
 const BatchSelector: React.FC<BatchSelectorProps> = ({
@@ -39,6 +56,9 @@ const BatchSelector: React.FC<BatchSelectorProps> = ({
   showAllOption = true,
   label = 'Collection Batch',
   autoSelectLatest = false,
+  periodOptions,
+  selectedPeriod = null,
+  onPeriodChange,
 }) => {
   const { activeBrand } = useBrand();
   const hasAutoSelected = useRef(false);
@@ -123,8 +143,21 @@ const BatchSelector: React.FC<BatchSelectorProps> = ({
     );
   }
 
-  // Get the display value for the selected batch
+  const quarters = periodOptions?.quarters ?? [];
+  const months = periodOptions?.months ?? [];
+
+  // Encoded Select value for the active selection.
+  const selectValue = selectedPeriod
+    ? `${selectedPeriod.type}:${selectedPeriod.start}`
+    : (selectedBatchId ?? '');
+
+  // Get the display value shown in the closed Select.
   const getDisplayValue = () => {
+    if (selectedPeriod) {
+      const list = selectedPeriod.type === 'quarter' ? quarters : months;
+      const match = list.find(p => p.period_start === selectedPeriod.start);
+      if (match) return match.label;
+    }
     if (selectedBatchId === null || selectedBatchId === undefined) {
       return 'All Data';
     }
@@ -138,10 +171,18 @@ const BatchSelector: React.FC<BatchSelectorProps> = ({
       <Select
         labelId="batch-selector-label"
         id="batch-selector"
-        value={selectedBatchId ?? ''}
+        value={selectValue}
         label={label}
         onChange={(e) => {
-          const value = e.target.value;
+          const value = String(e.target.value);
+          if (value.startsWith('quarter:')) {
+            onPeriodChange?.('quarter', value.slice('quarter:'.length));
+            return;
+          }
+          if (value.startsWith('month:')) {
+            onPeriodChange?.('month', value.slice('month:'.length));
+            return;
+          }
           const batchId = value === '' ? null : Number(value);
           const batch = batchId ? sortedBatches.find(b => b.id === batchId) : null;
           onBatchChange(batchId, batch);
@@ -155,6 +196,25 @@ const BatchSelector: React.FC<BatchSelectorProps> = ({
           </Typography>
         )}
       >
+        {quarters.length > 0 && (
+          <ListSubheader disableSticky>Quarter over Quarter</ListSubheader>
+        )}
+        {quarters.map((p) => (
+          <MenuItem key={`quarter:${p.period_start}`} value={`quarter:${p.period_start}`}>
+            <Typography variant="body2">{p.label}</Typography>
+          </MenuItem>
+        ))}
+        {months.length > 0 && (
+          <ListSubheader disableSticky>Month over Month</ListSubheader>
+        )}
+        {months.map((p) => (
+          <MenuItem key={`month:${p.period_start}`} value={`month:${p.period_start}`}>
+            <Typography variant="body2">{p.label}</Typography>
+          </MenuItem>
+        ))}
+        {sortedBatches.length > 0 && (
+          <ListSubheader disableSticky>Collections</ListSubheader>
+        )}
         {sortedBatches.map((batch) => (
           <MenuItem key={batch.id} value={batch.id}>
             <Typography variant="body2">

@@ -339,6 +339,7 @@ class BrandInfo(Base):
     description = Column(Text, nullable=True)  # Brand blurb for analysis
     strategic_messages = Column(Text, nullable=True)  # Key messages/narratives you want people to say
     is_active = Column(Boolean, default=True)  # Which brand is currently active for the user
+    fiscal_year_start_month = Column(Integer, nullable=False, default=1, server_default='1')  # 1, 4, 7, or 10; 1 = calendar year, 10 = US federal fiscal year. Drives quarter labels only.
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
