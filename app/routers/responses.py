@@ -223,14 +223,8 @@ def export_responses_to_excel(
 
     # Auto-adjust column widths
     for col in ws.columns:
-        max_length = 0
         column = col[0].column_letter
-        for cell in col:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
-            except:
-                pass
+        max_length = max((len(str(cell.value)) for cell in col), default=0)
         adjusted_width = min(max_length + 2, 50)  # Cap at 50 for readability
         ws.column_dimensions[column].width = adjusted_width
 

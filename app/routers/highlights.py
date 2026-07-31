@@ -32,6 +32,7 @@ Quarter labels follow the brand's fiscal_year_start_month setting, e.g.
 federal fiscal year.
 """
 import os
+import hmac
 import logging
 from collections import Counter
 from datetime import datetime, timedelta
@@ -59,7 +60,11 @@ def _verify_secret(x_cron_secret: str = Header(None)):
     cron_secret = os.getenv("HIGHLIGHTS_CRON_SECRET", "")
     if not cron_secret:
         raise HTTPException(status_code=503, detail="HIGHLIGHTS_CRON_SECRET not configured")
-    if x_cron_secret != cron_secret:
+    # Constant-time compare so response latency does not leak the secret.
+    # Encode explicitly: compare_digest rejects str with non-ASCII characters.
+    if not hmac.compare_digest(
+        (x_cron_secret or "").encode("utf-8"), cron_secret.encode("utf-8")
+    ):
         raise HTTPException(status_code=403, detail="Invalid cron secret")
 
 

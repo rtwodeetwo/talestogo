@@ -126,7 +126,8 @@ def login(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
         expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    # OAuth2 token_type value, not a credential
+    return {"access_token": access_token, "token_type": "bearer"}  # nosec B105
 
 
 @router.post("/google", response_model=schemas.Token)
@@ -166,7 +167,8 @@ def google_login(google_token: schemas.GoogleLogin, db: Session = Depends(get_db
         expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    # OAuth2 token_type value, not a credential
+    return {"access_token": access_token, "token_type": "bearer"}  # nosec B105
 
 
 @router.post("/microsoft", response_model=schemas.Token)
@@ -206,7 +208,8 @@ def microsoft_login(microsoft_token: schemas.MicrosoftLogin, db: Session = Depen
         expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    # OAuth2 token_type value, not a credential
+    return {"access_token": access_token, "token_type": "bearer"}  # nosec B105
 
 
 @router.get("/me", response_model=schemas.User)

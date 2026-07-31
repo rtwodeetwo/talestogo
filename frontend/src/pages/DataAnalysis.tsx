@@ -304,7 +304,6 @@ export default function DataAnalysis() {
             queryClient.invalidateQueries({ queryKey: ['share-of-voice-dashboard'] });
             queryClient.invalidateQueries({ queryKey: ['positioning-analysis'] });
             queryClient.invalidateQueries({ queryKey: ['positioning-dashboard'] });
-            queryClient.invalidateQueries({ queryKey: ['recommendations'] });
           }}
         />
       )}

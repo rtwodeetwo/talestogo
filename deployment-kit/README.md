@@ -12,6 +12,7 @@ This kit contains everything you need to deploy Tales at your organization.
 | `setup.sh` | Helper script for initial setup |
 | `IT_DEPLOYMENT_GUIDE.md` | Complete IT deployment instructions |
 | `USER_GUIDE.md` | End-user documentation |
+| `SECURITY.md` | Static analysis results for this release, accepted findings, and how to re-run the scans yourself |
 
 ---
 

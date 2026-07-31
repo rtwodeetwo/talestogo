@@ -453,8 +453,13 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
                 history.error_message = f"Unexpected error: {str(e)}"
                 history.completed_at = datetime.utcnow()
                 db.commit()
-            except:
-                pass
+            except Exception:
+                # Already handling a failure; keep the original error as the
+                # one that surfaces, but don't let this one vanish silently.
+                logger.warning(
+                    f"Could not record failed run for brand {brand_id} in history",
+                    exc_info=True,
+                )
 
     finally:
         db.close()
@@ -569,8 +574,13 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
                 history.error_message = f"Unexpected error: {str(e)}"
                 history.completed_at = datetime.utcnow()
                 db.commit()
-            except:
-                pass
+            except Exception:
+                # Already handling a failure; keep the original error as the
+                # one that surfaces, but don't let this one vanish silently.
+                logger.warning(
+                    f"Could not record failed run for brand {brand_id} in history",
+                    exc_info=True,
+                )
 
     finally:
         db.close()

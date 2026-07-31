@@ -7,8 +7,11 @@ APIs, Bing Search v7 REST, and Azure AI Foundry Agents (Grounding with Bing).
 """
 
 import os
+import logging
 from typing import Optional, List, Dict, Any
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Import LLM SDKs
 try:
@@ -647,7 +650,7 @@ class GenericLLMClient:
             if cleaned:
                 return cleaned
         except Exception:
-            pass
+            logger.debug("Label generation failed; using prompt prefix", exc_info=True)
         # Fallback: first N words of the original prompt.
         return " ".join(prompt.split()[:max_words])
 

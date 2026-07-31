@@ -229,10 +229,6 @@ See which descriptors are associated with your brand.
 - Positive vs. negative descriptors
 - Trends over time
 
-### Recommendations (Analytics > Recommendations)
-
-AI-generated suggestions for improving your brand's AI presence.
-
 ---
 
 ## Reports
@@ -253,7 +249,6 @@ Create comprehensive reports of your brand's AI reputation.
 - Key metrics and trends
 - Platform-by-platform analysis
 - Competitor comparison
-- Recommendations
 
 **Export Options:**
 - View in browser
@@ -391,7 +386,7 @@ Admins can view and manage brands across all users.
 2. **Monitor regularly** - AI models change, so track trends over time
 3. **Focus on key platforms** - Prioritize platforms your audience uses most
 4. **Track competitors** - Understand the competitive landscape
-5. **Act on insights** - Use recommendations to improve your online presence
+5. **Act on insights** - Export the data and interpret it alongside your own strategic context
 
 ### Troubleshooting
 

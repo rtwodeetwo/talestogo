@@ -169,7 +169,8 @@ def create_invitation(
     return schemas.InvitationResponse(
         email=invitation.email,
         full_name=invitation.full_name,
-        invitation_token="",  # No token needed
+        # Empty placeholder: this flow issues no token
+        invitation_token="",  # nosec B106
         expires_at=None,
         invitation_url=get_site_url(db)  # Just send them to the main site
     )
@@ -335,4 +336,5 @@ def accept_invitation(
         expires_delta=access_token_expires
     )
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    # OAuth2 token_type value, not a credential
+    return {"access_token": access_token, "token_type": "bearer"}  # nosec B105

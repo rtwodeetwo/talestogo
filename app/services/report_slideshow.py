@@ -3,7 +3,6 @@ PowerPoint Slideshow Export Service
 Generates PowerPoint presentations with:
 - Dashboard image (Key Metrics)
 - All sub-analysis charts from Analytics pages
-- Recommendations as formatted text slides
 """
 
 import os
@@ -25,7 +24,7 @@ def generate_slideshow(
     brand_id: Optional[int] = None
 ) -> io.BytesIO:
     """
-    Generate a PowerPoint slideshow with dashboard, analytics charts, and recommendations.
+    Generate a PowerPoint slideshow with dashboard and analytics charts.
 
     Args:
         markdown_content: The markdown report content
@@ -76,11 +75,6 @@ def generate_slideshow(
     for chart_title, chart_path in analytics_charts:
         if os.path.exists(chart_path):
             _create_image_slide(prs, chart_title, chart_path, BRAND_BLUE)
-
-    # === Recommendations Slides ===
-    recommendations = _extract_recommendations(markdown_content)
-    for rec_title, rec_bullets in recommendations:
-        _create_recommendations_slide(prs, rec_title, rec_bullets, BRAND_BLUE)
 
     # === Final Slide: Questions ===
     _create_final_slide(prs, BRAND_TEAL)
@@ -229,39 +223,6 @@ def _create_text_slide(prs: Presentation, title: str, content: str, color: RGBCo
         p.level = 0
 
 
-def _create_recommendations_slide(prs: Presentation, title: str, bullets: List[str], color: RGBColor):
-    """Create a slide with recommendation title and bulleted actions."""
-    blank_layout = prs.slide_layouts[6]
-    slide = prs.slides.add_slide(blank_layout)
-
-    # Add title
-    title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(0.8))
-    title_frame = title_box.text_frame
-    title_frame.text = title
-    title_para = title_frame.paragraphs[0]
-    title_para.font.size = Pt(28)
-    title_para.font.bold = True
-    title_para.font.color.rgb = color
-
-    # Add bulleted recommendations
-    text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
-    text_frame = text_box.text_frame
-    text_frame.word_wrap = True
-
-    for i, bullet in enumerate(bullets):
-        if i == 0:
-            p = text_frame.paragraphs[0]
-        else:
-            p = text_frame.add_paragraph()
-
-        p.text = f"• {bullet.strip()}"
-        p.font.size = Pt(14)
-        p.font.color.rgb = RGBColor(51, 51, 51)
-        p.space_before = Pt(6)
-        p.space_after = Pt(6)
-        p.level = 0
-
-
 def _create_final_slide(prs: Presentation, color: RGBColor):
     """Create the final 'Questions?' slide."""
     final_slide_layout = prs.slide_layouts[6]
@@ -294,78 +255,6 @@ def _extract_executive_summary(markdown_content: str) -> Optional[str]:
     if exec_summary_match:
         return exec_summary_match.group(1).strip()
     return None
-
-
-def _extract_recommendations(markdown_content: str) -> List[Tuple[str, List[str]]]:
-    """
-    Extract recommendations section and parse into individual recommendation slides.
-    Returns list of (title, bullet_points) tuples.
-    """
-    recommendations = []
-
-    # Find the Recommendations section
-    rec_match = re.search(
-        r'### 7\. Recommendations\n\n(.*?)(?=\n\n##|\Z)',
-        markdown_content,
-        re.DOTALL
-    )
-
-    if not rec_match:
-        return recommendations
-
-    rec_content = rec_match.group(1).strip()
-
-    # Split by paragraphs to get individual recommendations
-    # Each recommendation typically starts with a number or bullet
-    paragraphs = [p.strip() for p in rec_content.split('\n\n') if p.strip()]
-
-    current_rec_bullets = []
-    for para in paragraphs:
-        # Check if this is a numbered recommendation (starts with digit)
-        if re.match(r'^\d+\.', para):
-            # Save previous recommendation if it exists
-            if current_rec_bullets:
-                # Take first line as title, rest as bullets
-                first_line = current_rec_bullets[0]
-                # Extract title from "1. **Title**: description" format
-                title_match = re.match(r'^\d+\.\s*\*\*(.*?)\*\*:', first_line)
-                if title_match:
-                    title = title_match.group(1)
-                    # Get rest of first line as first bullet
-                    rest_of_line = re.sub(r'^\d+\.\s*\*\*.*?\*\*:\s*', '', first_line)
-                    bullets = [rest_of_line] + current_rec_bullets[1:]
-                    recommendations.append((title, bullets[:6]))  # Limit to 6 bullets
-                else:
-                    # Fallback: use first line as title
-                    title = re.sub(r'^\d+\.\s*', '', first_line)
-                    recommendations.append((title, current_rec_bullets[1:][:6]))
-
-            # Start new recommendation
-            current_rec_bullets = [para]
-        else:
-            # Add to current recommendation
-            if current_rec_bullets:
-                # Split by lines starting with "- " or "* "
-                lines = para.split('\n')
-                for line in lines:
-                    if line.strip().startswith(('- ', '* ', '• ')):
-                        clean_line = re.sub(r'^[-*•]\s*', '', line.strip())
-                        current_rec_bullets.append(clean_line)
-
-    # Don't forget the last recommendation
-    if current_rec_bullets:
-        first_line = current_rec_bullets[0]
-        title_match = re.match(r'^\d+\.\s*\*\*(.*?)\*\*:', first_line)
-        if title_match:
-            title = title_match.group(1)
-            rest_of_line = re.sub(r'^\d+\.\s*\*\*.*?\*\*:\s*', '', first_line)
-            bullets = [rest_of_line] + current_rec_bullets[1:]
-            recommendations.append((title, bullets[:6]))
-        else:
-            title = re.sub(r'^\d+\.\s*', '', first_line)
-            recommendations.append((title, current_rec_bullets[1:][:6]))
-
-    return recommendations
 
 
 def _find_dashboard_image(user_id: int, brand_id: Optional[int], brand_name: str) -> Optional[str]:

@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)  # Load environment variables from .env file
 
 import os
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -172,7 +173,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Tales",
     description="An AI tool for tracking and analyzing LLM brand depictions.",
-    version="0.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -207,16 +208,23 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
 # Build CORS origins list.
 #
 # Configure via environment variables:
+#   ENVIRONMENT      - set to "production" to drop the localhost dev origins
 #   FRONTEND_URL     - the primary frontend URL (e.g., https://tales.mylab.gov)
 #   ALLOWED_ORIGINS  - additional origins, comma-separated (optional)
 #
-# Localhost dev origins are always included so local Vite dev servers work.
+# Localhost dev origins are included outside production so local Vite dev
+# servers work. They are dropped in production because the CORS policy is
+# credentialed, and a deployment should not accept credentialed requests from
+# an origin it does not actually serve.
 def _build_allowed_origins() -> list[str]:
-    origins = [
-        "http://localhost:5173",  # Vite default dev port
-        "http://localhost:5177",  # Vite alternate dev port
-        "http://localhost:8080",  # Default docker-compose port
-    ]
+    if os.environ.get("ENVIRONMENT", "development").strip().lower() == "production":
+        origins = []
+    else:
+        origins = [
+            "http://localhost:5173",  # Vite default dev port
+            "http://localhost:5177",  # Vite alternate dev port
+            "http://localhost:8080",  # Default docker-compose port
+        ]
     frontend_url = os.environ.get("FRONTEND_URL")
     if frontend_url and frontend_url not in origins:
         origins.append(frontend_url)
@@ -228,6 +236,14 @@ def _build_allowed_origins() -> list[str]:
 
 
 cors_origins = _build_allowed_origins()
+
+if not cors_origins:
+    # Fine for the standard single-container deployment, where the frontend is
+    # served from this same origin and never makes a cross-origin request.
+    logging.getLogger(__name__).info(
+        "No CORS origins configured. If the frontend is hosted separately, set "
+        "FRONTEND_URL or ALLOWED_ORIGINS or its requests will be blocked."
+    )
 
 # Configure CORS to allow frontend to access backend
 app.add_middleware(
@@ -358,6 +374,9 @@ if FRONTEND_DIST.exists():
         nonce = getattr(request.state, "csp_nonce", "")
         html = _index_html_template.replace(
             "<head>",
+            # nonce is generated server-side by SecurityHeadersMiddleware via
+            # secrets.token_urlsafe(16). No request-controlled data is interpolated.
+            # nosemgrep: python.django.security.injection.raw-html-format.raw-html-format
             f'<head>\n    <meta name="emotion-nonce" content="{nonce}">',
         )
         return HTMLResponse(content=html)

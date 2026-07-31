@@ -1,6 +1,6 @@
 [project]
 name = "talestogo"
-version = "0.1.0"
+version = "2.0.0"
 
 # Optional dependencies — install with: pip install .[<extra>]
 # These are NOT installed by `pip install -r requirements.txt`. They light up
@@ -33,7 +33,11 @@ testpaths = ["tests"]
 
 # Bandit (Python SAST) configuration.
 #
-# Excludes one-shot ops scripts that are not part of the deployed application:
+# NOTE: bandit only reads this file when invoked with `-c pyproject.toml`.
+# Use scripts/run_sast.sh, which passes it (along with the equivalent flags
+# for the other scanners) so local and CI runs agree.
+#
+# Excluded paths are all outside the deployed request-handling surface:
 # - scripts/admin/sync_prod_to_localhost.py builds dynamic SQL by inspecting
 #   the schema and is only run manually by the maintainer to copy prod data
 #   to a localhost dev DB. Its B608 SQL-injection findings are false positives
@@ -41,6 +45,28 @@ testpaths = ["tests"]
 #   input) and would otherwise drown out legitimate signal from app/.
 # - scripts/migrations/ contains one-shot historical migration scripts that
 #   aren't re-run.
-# Both directories are excluded from the deployment surface area.
+# - scripts/data/ and scripts/generate_fake_trend_data.py generate synthetic
+#   demo data. Their B311 findings flag `random` as a non-cryptographic RNG,
+#   which is exactly what fake sample data should use. Real secrets in this
+#   codebase come from `secrets` (see app/routers/users.py, app/main.py).
+# - app/test_user_isolation.py is a test; B101 flags its `assert`s, which are
+#   the point of a test rather than a runtime control.
 [tool.bandit]
-exclude_dirs = ["scripts/admin", "scripts/migrations"]
+exclude_dirs = [
+    "scripts/admin",
+    "scripts/migrations",
+    "scripts/data",
+    "scripts/generate_fake_trend_data.py",
+    "app/test_user_isolation.py",
+]
+
+# B404 flags `import subprocess` and B603 flags any subprocess call that does
+# NOT use a shell. The no-shell form is the safe one, so B603 fires on correct
+# code; every call site here passes an argument list whose values are
+# stringified integers and ISO dates, never a shell string.
+#
+# The checks that catch the genuinely dangerous variants stay ON: B602
+# (subprocess with shell=True), B605 (os.system-style shell call) and B607
+# (partial executable path). run_sast.sh additionally greps for shell=True so
+# a regression can't hide behind these two skips.
+skips = ["B404", "B603"]

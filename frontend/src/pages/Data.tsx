@@ -266,7 +266,6 @@ export default function Data() {
             queryClient.invalidateQueries({ queryKey: ['positioning-analysis'] });
             queryClient.invalidateQueries({ queryKey: ['positioning-dashboard'] });
             queryClient.invalidateQueries({ queryKey: ['reports'] });
-            queryClient.invalidateQueries({ queryKey: ['recommendations'] });
           }}
         />
       )}
