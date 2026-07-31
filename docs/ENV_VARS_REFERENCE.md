@@ -265,6 +265,33 @@ Redis enables caching for improved performance. Not required for basic operation
 
 ---
 
+## Highlights Emails (Optional)
+
+Short monthly and quarterly highlights summaries emailed to a configured
+recipient. Every number in the email is computed directly from the database;
+the analysis LLM only writes prose around the verified fact sheet.
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `HIGHLIGHTS_ENABLED` | No | Add highlights email jobs to the built-in scheduler (monthly on the 2nd, quarterly on Jan/Apr/Jul/Oct 2nd, 9:00 AM UTC). Requires `ENABLE_SCHEDULER=true`. | `false` |
+| `HIGHLIGHTS_CRON_SECRET` | No | Shared secret for triggering `/highlights/monthly-check` and `/highlights/quarterly-check` over HTTP (sent as the `X-Cron-Secret` header). Only needed for external cron triggering. | (unset) |
+| `HIGHLIGHTS_RECIPIENT` | No | Email address to send highlights to | Falls back to the configured admin email |
+| `HIGHLIGHTS_BRAND_ID` | No | Brand to report on, by id | Auto-selected when exactly one brand exists |
+| `HIGHLIGHTS_BRAND_NAME` | No | Brand to report on, by exact name (used when `HIGHLIGHTS_BRAND_ID` is unset) | Auto-selected when exactly one brand exists |
+
+Highlights use the existing email backend (`RESEND_API_KEY` or `SMTP_*`) and
+the configured analysis LLM provider. Quarter labels follow the brand's
+`fiscal_year_start_month` setting.
+
+**External cron alternative** to the built-in scheduler:
+
+```
+0 9 2 * * curl -X POST -H "X-Cron-Secret: $HIGHLIGHTS_CRON_SECRET" https://your-tales-host/highlights/monthly-check
+0 9 2 1,4,7,10 * curl -X POST -H "X-Cron-Secret: $HIGHLIGHTS_CRON_SECRET" https://your-tales-host/highlights/quarterly-check
+```
+
+---
+
 ## Analytics Configuration
 
 | Variable | Required | Description | Default |

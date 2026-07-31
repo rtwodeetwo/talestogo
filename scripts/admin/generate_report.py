@@ -1192,197 +1192,13 @@ For each threat, provide:
 
 **Strategic Implications** (2 sentences on why this threatens {brand_name}'s goals)
 
-**Recommended Actions** (4-5 SPECIFIC, tactical recommendations)
-- Each action must reference specific platforms, query types, descriptors, or positioning strategies
-- Include measurable targets (e.g., "Increase mentions in X category by Y%")
-- Be tactical and immediately actionable
+Describe what the data shows. Do NOT recommend actions, tactics, or next steps.
 
 Format your response using **bold headers** for each threat (not ### headings). Use bullet points for sub-items.
-Be ruthlessly specific. Use actual data and examples. No generic advice like "improve visibility" - every recommendation must be tailored to the specific competitive threat shown in the data.
+Be ruthlessly specific. Use actual data and examples. Every observation must be tied to the specific competitive threat shown in the data.
 Do NOT use emojis or icons.
 Do NOT use numbered lists (1., 2., 3.).
 Do NOT use ### headings or multiple pound signs as decorative elements."""
-
-    return call_report_llm(prompt, provider)
-
-
-def generate_strategic_priorities(
-    metrics_summary: Dict[str, Any],
-    brand_name: str,
-    brand_info: Optional[BrandInfo],
-    brand_context_str: str,
-    descriptor_context: str,
-    competitor_context: str,
-    platform_performance: str,
-    best_responses: List[Response],
-    worst_responses: List[Response],
-    llm_state_data: Dict[str, Any] = None,
-    provider: Optional[ProviderConfig] = None,
-    web_search_providers: List[ProviderConfig] = None
-) -> str:
-    """Generate enhanced strategic priorities with rich context.
-    Uses the configured LLM provider (analysis_provider).
-    """
-
-    # Build strengths and weaknesses from actual responses
-    strengths = ""
-    for i, resp in enumerate(best_responses[:3], 1):
-        strengths += f"\n{i}. Query: \"{resp.query_text}\" ({resp.platform})\n"
-        strengths += f"   Position: {resp.brand_position}, Sentiment: {resp.sentiment}\n"
-        if resp.descriptors:
-            strengths += f"   Descriptors: {resp.descriptors}\n"
-
-    weaknesses = ""
-    for i, resp in enumerate(worst_responses[:3], 1):
-        weaknesses += f"\n{i}. Query: \"{resp.query_text}\" ({resp.platform})\n"
-        weaknesses += f"   Brand mentioned: {resp.brand_mentioned}\n"
-        if resp.competitors:
-            weaknesses += f"   Competitors mentioned instead: {resp.competitors}\n"
-
-    # Fetch recent industry news AND AI citation trends using Gemini
-    industry = brand_info.industry if brand_info and brand_info.industry else "the industry"
-
-    # Query 1: Recent industry news
-    news_query = f"Recent news and developments in {industry} in the last 30 days, particularly related to {brand_name} or its competitors"
-
-    # Query 2: AI citation trends and source preferences
-    citation_query = f"""Research the latest trends (2025-2026) about what sources and publications AI platforms (ChatGPT, Claude, Gemini, Perplexity) are reading and citing when answering questions about {industry}.
-
-Consider:
-- What types of publications are LLMs prioritizing? (Academic journals, news outlets, industry blogs, government sites, Reddit discussions, etc.)
-- What sources have high authority and visibility in AI training data and retrieval systems?
-- What recent media trends affect AI visibility? (e.g., Muck Rack data on journalist engagement, publication reach)
-- Which content formats get cited most? (Research papers, case studies, press releases, technical documentation)
-- Platform-specific preferences (e.g., Perplexity's real-time search vs. ChatGPT's training data cutoff)
-
-Provide specific, actionable insights about WHERE organizations in {industry} should publish content to maximize AI platform visibility."""
-
-    try:
-        # Use web search providers for fresh news/trend data if available
-        recent_news = call_web_search_llm(news_query, web_search_providers, provider)
-        if not recent_news:
-            recent_news = "No recent news data available."
-
-        citation_trends = call_web_search_llm(citation_query, web_search_providers, provider)
-        if not citation_trends:
-            citation_trends = "No citation trend data available."
-    except Exception as e:
-        print(f"Warning: Could not fetch recent news or citation trends: {e}")
-        recent_news = "No recent news data available."
-        citation_trends = "No citation trend data available."
-
-    # Build LLM state context if available
-    llm_state_context = ""
-    if llm_state_data and llm_state_data.get('raw_research'):
-        llm_state_context = f"""
-
-RECENT LLM PLATFORM CHANGES:
-The following recent changes to AI platform behavior should inform your recommendations:
-{llm_state_data['raw_research'][:2000]}
-
-Consider how these changes affect:
-- Which content types and sources the brand should prioritize
-- How to adapt content strategy for evolving LLM preferences
-- Opportunities or risks from platform-specific changes
-"""
-
-    prompt = f"""You are a strategic communications consultant analyzing AI-generated responses about a brand.
-
-CRITICAL CONTEXT: This analysis examines how Large Language Models (LLMs like ChatGPT, Claude, Perplexity, Gemini) describe {brand_name} when users ask questions. Brands CANNOT directly publish content to LLMs. Instead, LLMs generate responses based on the authoritative sources they reference.
-
-IMPORTANT: Different LLMs prioritize different source types. Your recommendations must be data-driven and strategic:
-- Analyze the PLATFORM-BY-PLATFORM PERFORMANCE data below to identify which LLMs perform well vs. poorly for {brand_name}
-- Look at the actual response examples to understand what sources those LLMs are likely citing
-- Consider that different LLMs may favor different sources:
-  * Academic/research-focused LLMs may prioritize peer-reviewed papers, .edu domains, research institutions
-  * Search-augmented LLMs (like Perplexity) may prioritize recent news articles, authoritative websites, Reddit discussions
-  * Some may favor Wikipedia, government sources (.gov), or technical documentation
-- If {brand_name} performs poorly on a specific platform, diagnose WHY by examining the queries and recommend targeted strategies for the SOURCE TYPES that platform likely values
-
-Your recommendations should be specific about:
-1. WHAT content to create (research papers vs. blog posts vs. technical docs vs. media outreach)
-2. WHERE to publish it (academic journals, tech blogs, Reddit, news outlets, .gov partnerships, etc.)
-3. WHY that approach targets the specific LLMs where {brand_name} underperforms
-
-DO NOT give generic advice like "improve online presence" - every recommendation must be tied to specific patterns in the data
-
-{brand_context_str}
-
-CURRENT PERFORMANCE METRICS:
-- Brand Mention Rate: {metrics_summary['mention_metrics']['yes_pct']}%
-- Positive Sentiment: {metrics_summary['positive_sentiment_rate']}%
-- Share of Voice: {metrics_summary['share_of_voice']['brand_sov']}%
-- Positioning Average: {metrics_summary['positioning_average']}/5.0
-- Descriptor Match Rate: {metrics_summary['descriptor_match_rate']}%
-
-PLATFORM-BY-PLATFORM PERFORMANCE:
-{platform_performance}
-
-TARGET DESCRIPTORS PERFORMANCE:
-{descriptor_context}
-
-COMPETITIVE LANDSCAPE:
-{competitor_context}
-
-KEY STRENGTHS (Queries where {brand_name} excels):
-{strengths}
-
-KEY WEAKNESSES (Queries where {brand_name} is absent):
-{weaknesses}
-
-RECENT INDUSTRY NEWS & DEVELOPMENTS (Last 30 Days):
-{recent_news}
-
-AI CITATION TRENDS & SOURCE PREFERENCES (2025-2026):
-{citation_trends}
-{llm_state_context}
-Based on this comprehensive analysis, generate EXACTLY FIVE strategic priorities for {brand_name}.
-
-IMPORTANT: Your recommendations MUST be informed by current AI citation trends and source preferences:
-- Reference the specific publication types and sources that LLMs are prioritizing (from the citation trends data above)
-- Recommend WHERE to publish based on which sources have demonstrated high AI visibility
-- Consider platform-specific source preferences when making recommendations
-- Use data from Muck Rack and media intelligence sources when available to inform publication strategy
-- Prioritize content formats and channels that are proven to get cited by AI platforms
-
-IMPORTANT: Consider how recent industry news creates opportunities or threats:
-- If there's a major development, breakthrough, or trend in the industry, recommend how {brand_name} can position itself in relation to it
-- If competitors made news, identify opportunities to counter-program or claim related positioning
-- If there are emerging topics or conversations, recommend getting ahead of them with authoritative content
-- Consider whether recent events change the urgency or approach for any communications goals
-
-CRITICAL: Your priorities must focus on achieving {brand_name}'s strategic messaging goals:
-- Identify TARGET DESCRIPTORS that are underperforming (low match rate, absent from responses, or competitors own them)
-- Recommend specific content strategies to associate {brand_name} with those missing descriptors
-- If a descriptor appears frequently for competitors but not {brand_name}, explain how to claim that positioning
-- Address platform-specific weaknesses with targeted source strategies for those LLMs
-- Connect every recommendation back to increasing the presence of specific target descriptors in AI responses
-
-For each priority:
-
-**[Priority Number]. [Priority Title]** (6-10 words, specific to {brand_name}'s situation)
-
-**Strategic Rationale** (3-4 sentences explaining WHY this matters based on SPECIFIC DATA from above)
-- Reference actual metrics, query examples, competitors, or platform performance
-- MUST identify which target descriptor(s) this addresses and current vs. desired state
-- Connect to the brand's strategic messages and positioning goals
-- Explain the opportunity cost of not acting
-
-**Key Actions** (4-5 SPECIFIC, measurable actions)
-- Each action must specify which target descriptor(s) to emphasize
-- Include target metrics (e.g., "Increase 'innovative' descriptor association from 12% to 35% by creating...")
-- Specify WHAT content to create, WHERE to publish it (using insights from AI citation trends), and HOW it reinforces target descriptors
-- Reference specific platforms, query categories, competitors, or source types that LLMs prioritize
-- Explicitly cite which publication types/sources from the citation trends data you're recommending (e.g., "Publish in [specific journal type] because Gemini prioritizes academic sources")
-- Be tactical and immediately actionable
-
-Format using bullet points (- ) for each recommendation, with bold headers for each main point.
-Be data-driven and specific. No generic advice like "improve SEO" or "create more content" - every recommendation must be tailored to {brand_name}'s specific situation shown in the data above.
-Do NOT use emojis or icons.
-Do NOT use numbered lists (1., 2., 3.).
-Do NOT use multiple pound signs (###) or asterisks (***) as decorative elements or dividers.
-
-IMPORTANT - Citations: DO NOT include any citations, references, or external sources. Base all analysis solely on the data provided above. Do NOT add a "References" section at the end."""
 
     return call_report_llm(prompt, provider)
 
@@ -1589,7 +1405,7 @@ Focus your analysis on:
 - Current month's performance and what's driving the numbers
 - How this month compares to historical averages (better, worse, or stable)
 - Week-to-week trends within this month
-- Immediate actionable insights for the coming month"""
+- Which specific changes in the data account for the month's movement"""
 
     elif report_type == 'quarterly':
         period_context = f"This analysis covers {period_name if period_name else 'the last calendar quarter'}."
@@ -1599,7 +1415,7 @@ Focus your analysis on:
 - Quarter's overall performance relative to prior periods
 - Month-to-month trends within this quarter
 - Seasonal patterns or notable shifts
-- Strategic recommendations for the coming quarter"""
+- How the quarter's position differs from where it started"""
 
     elif report_type == 'annual':
         period_context = f"This comprehensive annual analysis covers {period_name if period_name else 'the last calendar year'}."
@@ -1609,7 +1425,7 @@ Focus your analysis on:
 - Year-over-year performance and growth
 - Quarter-to-quarter trends within the year
 - Long-term strategic positioning
-- Strategic priorities for the coming year"""
+- Which shifts across the year were most consequential"""
 
     else:
         period_context = "This comprehensive analysis covers ALL historical data to date."
@@ -1619,7 +1435,7 @@ Focus your analysis on:
 - Long-term performance patterns and trends
 - Overall strategic positioning across time
 - Cumulative strengths and persistent challenges
-- Strategic recommendations for sustained improvement"""
+- Which patterns have held steady and which have reversed"""
 
     # Add trend data if available
     trend_context = ""
@@ -1866,7 +1682,6 @@ def generate_markdown_report(
     positioning_average: float,
     negative_statements: List[Dict[str, str]],
     competitor_threats: str,
-    strategic_priorities: str,
     executive_summary: str,
     brand_name: str,
     brand_info: Optional[BrandInfo],
@@ -2195,14 +2010,6 @@ Threats are calculated based on three factors: mention frequency (weight: 0.7), 
 
     report += "\n\n**Detailed Threat Analysis:**\n\n"
     report += competitor_threats
-
-    report += """
-
----
-
-<h3 style="color: #0066a2;">Recommendations</h3>
-"""
-    report += strategic_priorities
 
     report += """
 
@@ -2544,22 +2351,6 @@ def generate_report_main(
             provider=analysis_provider
         )
 
-        print("  - Strategic recommendations...")
-        strategic_priorities = generate_strategic_priorities(
-            metrics_summary=metrics_summary,
-            brand_name=brand_name,
-            brand_info=brand_info,
-            brand_context_str=brand_context_str,
-            descriptor_context=descriptor_context,
-            competitor_context=competitor_context,
-            platform_performance=platform_performance,
-            best_responses=best_responses,
-            worst_responses=worst_responses,
-            llm_state_data=llm_state_data,
-            provider=analysis_provider,
-            web_search_providers=web_search_providers
-        )
-
         print("AI insights generated")
 
         # Step 4b: Generate section-specific insights
@@ -2685,7 +2476,6 @@ def generate_report_main(
             positioning_average=positioning_average,
             negative_statements=negative_statements,
             competitor_threats=competitor_threats,
-            strategic_priorities=strategic_priorities,
             executive_summary=executive_summary,
             brand_name=brand_name,
             brand_info=brand_info,

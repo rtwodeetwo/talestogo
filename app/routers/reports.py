@@ -380,7 +380,7 @@ Critically, most queries are designed as "visibility tests" that deliberately ex
 
 The collected responses undergo a two-stage analysis process combining structured data extraction with AI-powered insight generation. In the first stage, Gemini 2.5 Pro analyzes each response to extract structured data including mention type (direct, indirect, or absent), brand positioning (categorized as leader, top 3, featured, listed, or not mentioned), sentiment classification (very positive, positive, neutral, negative, or mixed), associated descriptors and adjectives, competitor mentions, and cited sources.
 
-This extraction process is context-aware, incorporating your brand's industry context, strategic messaging, target descriptors, and known competitors to ensure relevant and accurate classification. In the second stage, Gemini 2.5 Pro synthesizes these structured findings with real-time industry news and comprehensive brand context to generate strategic insights and actionable recommendations, explicitly connecting each finding to specific performance gaps and opportunities.
+This extraction process is context-aware, incorporating your brand's industry context, strategic messaging, target descriptors, and known competitors to ensure relevant and accurate classification. In the second stage, Gemini 2.5 Pro synthesizes these structured findings with real-time industry news and comprehensive brand context to generate strategic insights, explicitly connecting each finding to specific performance gaps and opportunities.
 
 ## Key Performance Metrics
 
@@ -497,7 +497,7 @@ Threat Score = (mention_count × 0.7) + (negative_overlap × 2.0) + (positive_co
 
 4. **Output:** Quantitative threat scores and rankings for all competitors, plus qualitative descriptions of top 3 competitive threats with specific examples, strategic implications, and recommended counter-actions.
 
-**Rationale:** The quantitative threat score efficiently identifies which competitors pose the greatest risk, while the AI-generated qualitative analysis provides strategic context, concrete examples, and actionable recommendations that a formula alone cannot deliver.
+**Rationale:** The quantitative threat score efficiently identifies which competitors pose the greatest risk, while the AI-generated qualitative analysis provides strategic context and concrete examples that a formula alone cannot deliver.
 
 ### Summary of Metric Calculation Approaches
 
@@ -514,13 +514,11 @@ Threat Score = (mention_count × 0.7) + (negative_overlap × 2.0) + (positive_co
 
 Competitor analysis forms a critical component of the methodology, examining how your brand performs relative to other organizations in AI-generated discourse. The system tracks pre-configured competitors with metadata including organization type, focus areas, and key descriptors, while also automatically extracting mentions of organizations not initially identified as competitors.
 
-Co-occurrence analysis reveals which competitors frequently appear alongside your brand in AI responses, and comparative share of voice calculations quantify relative visibility. The analysis identifies specific queries where competitors received more favorable positioning than your brand, extracts the descriptors and positioning competitors own, and examines concrete response examples showing competitive advantages. These findings enable the generation of targeted recommendations for closing competitive gaps and claiming strategic positioning currently owned by rivals.
+Co-occurrence analysis reveals which competitors frequently appear alongside your brand in AI responses, and comparative share of voice calculations quantify relative visibility. The analysis identifies specific queries where competitors received more favorable positioning than your brand, extracts the descriptors and positioning competitors own, and examines concrete response examples showing competitive advantages. These findings surface where the competitive gaps are and which strategic positioning is currently owned by rivals.
 
-## Recommendations Generation
+## Working With the Findings
 
-The strategic recommendations produced for your brand result from a sophisticated AI-driven synthesis process that connects quantitative performance data with qualitative strategic context. The system performs gap analysis comparing target descriptors against actual usage, diagnoses which AI platforms underperform and infers why based on response patterns, benchmarks competitive positioning to identify claimable strategic territory, analyzes source types that different platforms prioritize, and incorporates real-time industry developments to identify timely opportunities.
-
-Each recommendation includes strategic rationale backed by specific metrics, four to five tactical action steps with measurable targets, explicit alignment with target descriptors your brand aims to reinforce, source strategies specifying what content to create and where to publish it, and platform targeting identifying which AI systems each tactic aims to influence. This approach ensures recommendations are data-driven, actionable, and directly tied to measurable improvements in AI reputation metrics.
+Tales reports describe what the data shows; they do not prescribe what to do about it. Reports and the accompanying spreadsheet exports are designed to be read directly, or handed to an AI assistant of your choosing along with whatever strategic context matters to your organization, so that any recommendations reflect priorities Tales has no visibility into.
 
 ## Limitations and Considerations
 

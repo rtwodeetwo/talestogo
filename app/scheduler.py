@@ -460,8 +460,13 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
                 history.error_message = f"Unexpected error: {str(e)}"
                 history.completed_at = datetime.utcnow()
                 db.commit()
-            except:
-                pass
+            except Exception:
+                # Already handling a failure; keep the original error as the
+                # one that surfaces, but don't let this one vanish silently.
+                logger.warning(
+                    f"Could not record failed run for brand {brand_id} in history",
+                    exc_info=True,
+                )
 
     finally:
         db.close()
@@ -576,8 +581,13 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
                 history.error_message = f"Unexpected error: {str(e)}"
                 history.completed_at = datetime.utcnow()
                 db.commit()
-            except:
-                pass
+            except Exception:
+                # Already handling a failure; keep the original error as the
+                # one that surfaces, but don't let this one vanish silently.
+                logger.warning(
+                    f"Could not record failed run for brand {brand_id} in history",
+                    exc_info=True,
+                )
 
     finally:
         db.close()
@@ -1100,6 +1110,42 @@ def start_scheduler():
             max_instances=1
         )
         logger.info("Scheduled: Annual report - January 1 at 8:00 AM UTC")
+
+        # Optional highlights emails, gated by HIGHLIGHTS_ENABLED. Runs on the
+        # 2nd of the month so the day-1 report jobs have already finished.
+        # The /highlights HTTP endpoints remain available for external cron.
+        if os.getenv('HIGHLIGHTS_ENABLED', 'false').lower() in ('true', '1', 'yes'):
+            def _run_monthly_highlights_job():
+                from .routers.highlights import run_monthly_highlights
+                db = SessionLocal()
+                try:
+                    asyncio.run(run_monthly_highlights(db))
+                finally:
+                    db.close()
+
+            def _run_quarterly_highlights_job():
+                from .routers.highlights import run_quarterly_highlights
+                db = SessionLocal()
+                try:
+                    asyncio.run(run_quarterly_highlights(db))
+                finally:
+                    db.close()
+
+            scheduler.add_job(
+                _run_monthly_highlights_job,
+                CronTrigger(day=2, hour=9, minute=0),
+                id='monthly_highlights_email',
+                replace_existing=True,
+                max_instances=1
+            )
+            scheduler.add_job(
+                _run_quarterly_highlights_job,
+                CronTrigger(month='1,4,7,10', day=2, hour=9, minute=0),
+                id='quarterly_highlights_email',
+                replace_existing=True,
+                max_instances=1
+            )
+            logger.info("Scheduled: Highlights emails - monthly on the 2nd 9:00 AM UTC, quarterly Jan/Apr/Jul/Oct 2nd 9:00 AM UTC")
 
         scheduler.start()
         logger.info("=" * 60)

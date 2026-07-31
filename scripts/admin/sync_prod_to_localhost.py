@@ -226,6 +226,9 @@ class DataSyncer:
 
         # Pre-computed bcrypt hash for "test123"
         # Generated with: passlib.hash.bcrypt.hash("test123")
+        # Deliberately public: this overwrites every synced user's password so a
+        # copy of prod data is unusable for logging in anywhere but localhost.
+        # nosemgrep: generic.secrets.security.detected-bcrypt-hash.detected-bcrypt-hash
         test_password_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5NU2eL2eZ.gqC"
 
         # Get columns that exist in local database

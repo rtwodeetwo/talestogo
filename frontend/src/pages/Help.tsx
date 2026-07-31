@@ -235,9 +235,10 @@ export default function Help() {
           </AccordionSummary>
           <AccordionDetails>
             <Typography variant="body2" color="text.secondary">
-              After running an analysis, reports are available in the <strong>Analytics &gt; Recommendations</strong> page.
+              After running an analysis, reports are available in the <strong>Reports</strong> page.
               You can view reports in your browser or download them in Word (.docx) or HTML format. Each report includes
-              comprehensive insights, charts, and recommendations based on your latest data.
+              comprehensive insights and charts based on your latest data. You can also export the underlying
+              response data as a spreadsheet to analyze yourself or hand to an AI assistant.
             </Typography>
           </AccordionDetails>
         </Accordion>

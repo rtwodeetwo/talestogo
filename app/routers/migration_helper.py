@@ -1,6 +1,8 @@
 """
-Temporary migration helper endpoint
-This will be removed after running the rollback migration
+Admin-only database maintenance endpoints.
+
+Schema-altering migrations are not exposed over HTTP; run the scripts in
+migrations/ against the database directly instead.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -40,52 +42,6 @@ def validate_sequence_name(sequence_name: str) -> str:
         raise ValueError(f"Invalid sequence name format: {sequence_name}")
 
     return sequence_name
-
-
-@router.post("/rollback-pending-shares")
-def rollback_pending_shares(
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Run the rollback migration to remove pending shares columns.
-    Only accessible to logged-in users.
-
-    This endpoint will be removed after the migration is complete.
-    """
-
-    try:
-        # Step 1: Delete pending shares
-        result = db.execute(text("DELETE FROM brand_shares WHERE user_id IS NULL"))
-        deleted_count = result.rowcount
-
-        # Step 2: Make user_id NOT NULL
-        db.execute(text("ALTER TABLE brand_shares ALTER COLUMN user_id SET NOT NULL"))
-
-        # Step 3: Drop indexes
-        db.execute(text("DROP INDEX IF EXISTS ix_brand_shares_pending_email"))
-        db.execute(text("DROP INDEX IF EXISTS ix_brand_shares_is_pending"))
-
-        # Step 4: Drop columns
-        db.execute(text("ALTER TABLE brand_shares DROP COLUMN IF EXISTS pending_email"))
-        db.execute(text("ALTER TABLE brand_shares DROP COLUMN IF EXISTS is_pending"))
-
-        db.commit()
-
-        return {
-            "success": True,
-            "message": "Rollback completed successfully",
-            "details": {
-                "deleted_pending_shares": deleted_count,
-                "user_id_now_required": True,
-                "columns_removed": ["pending_email", "is_pending"],
-                "indexes_removed": ["ix_brand_shares_pending_email", "ix_brand_shares_is_pending"]
-            }
-        }
-
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
 
 
 @router.post("/reset-sequences")
@@ -141,6 +97,9 @@ def reset_sequences(
                     # Note: PostgreSQL doesn't allow parameterized identifiers in setval.
                     # Both identifiers are format-validated above before use.
                     reset_sql = f"SELECT setval('{validated_sequence}', COALESCE((SELECT MAX(id) FROM {validated_table}), 1), true)"  # nosec B608
+                    # Admin-only. Identifiers come from VALID_TABLES and from
+                    # pg_get_serial_sequence, both format-validated above.
+                    # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
                     db.execute(text(reset_sql))
                     results[table] = "reset"
                 else:
@@ -194,7 +153,8 @@ def debug_brand_shares(
             validated_sequence = validate_sequence_name(sequence_name)
             # PostgreSQL doesn't allow parameterized identifiers for FROM clause
             # But we've validated the format, so this is safe
-            seq_val_result = db.execute(text(f"SELECT last_value FROM {validated_sequence}"))  # nosec B608 — validated_sequence is format-validated above
+            # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+            seq_val_result = db.execute(text(f"SELECT last_value FROM {validated_sequence}"))  # nosec B608: validated_sequence is format-validated above
             seq_value = seq_val_result.scalar()
 
         return {

@@ -675,7 +675,8 @@ def admin_login_as_user(
 
     return {
         "access_token": access_token,
-        "token_type": "bearer",
+        # OAuth2 token_type value, not a credential
+        "token_type": "bearer",  # nosec B105
         "user_email": target_user.email,
         "user_name": target_user.full_name
     }
