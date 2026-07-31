@@ -31,11 +31,12 @@ export default function DescriptorAnalysis() {
     },
   });
 
-  // Fetch LLM breakdown data
+  // Fetch LLM breakdown data (same collection filter as the Target Descriptors table)
   const { data: llmData, isLoading: llmLoading, error: llmError } = useQuery({
-    queryKey: ['descriptors-by-llm'],
+    queryKey: ['descriptors-by-llm', selectedBatchId],
     queryFn: async () => {
-      const response = await api.get('/api/analytics/descriptors-by-llm');
+      const params = selectedBatchId ? { batch_id: selectedBatchId } : {};
+      const response = await api.get('/api/analytics/descriptors-by-llm', { params });
       return response.data;
     },
   });
@@ -272,7 +273,7 @@ export default function DescriptorAnalysis() {
                 Top Descriptors by LLM Platform
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                Most frequently used descriptors for your brand by each AI platform (Top 5)
+                Most frequently used descriptors in responses mentioning your brand, by AI platform (Top 5), for the collection selected above
               </Typography>
             </Box>
           </Box>

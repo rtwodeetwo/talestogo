@@ -118,6 +118,13 @@ def get_period_date_range(period_type: str, reference_date: datetime) -> tuple:
             - For monthly: previous complete month
             - For quarterly: previous complete quarter
             - For annual: previous complete year
+
+    Boundary convention: the end date here is INCLUSIVE (last second of the
+    period, 23:59:59). The helpers in scripts/admin/generate_report.py use an
+    exclusive first-of-next-period end instead. The scheduler always passes
+    these explicit dates through to the report script, so the two conventions
+    never mix within one report; a response stamped in the final second of a
+    period is included either way except in that one-second window.
     """
     if period_type == 'monthly':
         # Previous complete month

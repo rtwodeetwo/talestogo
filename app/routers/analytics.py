@@ -952,6 +952,7 @@ def get_share_of_voice_by_llm(
 
 @router.get("/descriptors-by-llm")
 def get_descriptors_by_llm(
+    batch_id: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
     brand_id: Optional[int] = Depends(get_active_brand_id)
@@ -959,6 +960,10 @@ def get_descriptors_by_llm(
     """
     Get top descriptors breakdown by LLM platform.
     Returns the most common descriptors used by each platform.
+
+    Counts only responses where the brand is mentioned, and (when batch_id is
+    given) only the selected collection batch, so the numbers line up with the
+    Target Descriptors table on the Descriptor Analysis page.
     """
     if not brand_id:
         return []
@@ -966,7 +971,7 @@ def get_descriptors_by_llm(
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
 
     # Get all descriptors by platform
-    responses = db.query(
+    query = db.query(
         models.Response.platform,
         models.Response.descriptors
     ).filter(
@@ -975,8 +980,12 @@ def get_descriptors_by_llm(
         models.Response.platform.isnot(None),
         models.Response.descriptors.isnot(None),
         models.Response.descriptors != '',
+        models.Response.brand_mentioned == 'Yes',
         models.Response.batch_id.isnot(None)  # Only include responses with batch_id for consistency with trend data
-    ).all()
+    )
+    if batch_id is not None:
+        query = query.filter(models.Response.batch_id == batch_id)
+    responses = query.all()
 
     # Process descriptors by platform
     platform_descriptors = {}
