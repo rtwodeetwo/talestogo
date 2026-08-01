@@ -308,6 +308,11 @@ def mention_rate(pop: MetricPopulation) -> MetricValue:
 def direct_mention_rate(pop: MetricPopulation) -> MetricValue:
     """Share of organic answers naming the brand explicitly (Yes only).
 
+    Numerator   brand_mentioned == "Yes"
+    Denominator all analyzed, valid-enum, non-branded answers, the same
+                population as mention_rate
+    Excludes    Indirect mentions
+
     A legitimate, narrower metric. It exists so the call sites that currently
     want a Yes-only rate (metrics.py:161, routers/analytics.py:739) have a
     correct home instead of quietly redefining `mention_rate`.
