@@ -403,3 +403,24 @@ def seed_golden_dataset(db):
     db.add_all(builder.rows)
 
     return builder.rows
+
+
+def seed_batch_analytics(db):
+    """Populate batch_analytics using the CURRENT implementation.
+
+    This is deliberately not part of seed_golden_dataset. It represents "what the
+    app stored", not ground truth, so it is opt-in and only the reconciliation
+    surfaces ask for it. The canonical expectations in tests/golden_expected.py
+    never depend on it.
+
+    Note that compute_batch_analytics commits (app/services/batch_analytics.py:166,
+    :194), which is safe here only because the golden database is in-memory.
+    """
+    from app.services.batch_analytics import compute_batch_analytics
+
+    for batch_id, user_id, brand_id in (
+        (BATCH_1_ID, USER_1_ID, BRAND_1_ID),
+        (BATCH_2_ID, USER_1_ID, BRAND_1_ID),
+        (BATCH_3_ID, USER_2_ID, BRAND_2_ID),
+    ):
+        compute_batch_analytics(db, batch_id, user_id, brand_id)

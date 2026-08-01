@@ -26,9 +26,9 @@ ADMIN_USER_ID = 1
 @pytest.fixture()
 def test_db():
     """Fresh in-memory SQLite DB with a single admin user seeded."""
-    test_db_uri = "sqlite:///file:llmprovrouter?mode=memory&cache=shared"
+    test_db_uri = "sqlite:///file:llmprovrouter?mode=memory&cache=shared&uri=true"
     engine = create_engine(
-        test_db_uri, connect_args={"check_same_thread": False, "uri": True}
+        test_db_uri, connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

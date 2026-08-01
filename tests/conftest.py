@@ -23,9 +23,9 @@ def golden_engine():
     """Engine bound to a fresh in-memory database holding the golden dataset."""
     import app.models  # noqa: F401 - registers the models on Base.metadata
 
-    uri = "sqlite:///file:metricsgolden?mode=memory&cache=shared"
+    uri = "sqlite:///file:metricsgolden?mode=memory&cache=shared&uri=true"
     engine = create_engine(
-        uri, connect_args={"check_same_thread": False, "uri": True}
+        uri, connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(bind=engine)
 

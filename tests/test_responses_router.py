@@ -32,8 +32,8 @@ def test_db():
     OWNER user and shared with the SHARED user, plus seeded responses
     across two batches.
     """
-    test_db_uri = "sqlite:///file:responsesroutertest?mode=memory&cache=shared"
-    engine = create_engine(test_db_uri, connect_args={"check_same_thread": False, "uri": True})
+    test_db_uri = "sqlite:///file:responsesroutertest?mode=memory&cache=shared&uri=true"
+    engine = create_engine(test_db_uri, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
