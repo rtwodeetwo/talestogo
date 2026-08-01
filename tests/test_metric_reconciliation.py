@@ -1,0 +1,419 @@
+"""
+The reconciliation harness: do the surfaces agree with each other?
+
+Every test here asks one question. For the same brand, the same period and the
+same underlying rows, does the Dashboard report the same number as the CSV
+export, the Excel export, the stored BatchAnalytics row and the highlights
+email? Today, mostly not. Each disagreement is marked xfail with the file:line
+responsible, and that xfail list IS the Phase 3 migration checklist: each future
+change removes entries from it.
+
+An unexpected pass (XPASS) means the audit was wrong about that surface and the
+finding needs re-checking. Run with --runxfail to see the full matrix.
+"""
+import csv
+import io
+
+import pytest
+
+from app.services import metrics_core as mc
+from app.services import metrics_query as mq
+from tests import golden_expected as gx
+from tests.fixtures.golden_dataset import (
+    BATCH_1_ID, BRAND_1_ID, CONTROL_CHAR_RESPONSE_TEXT, USER_1_ID,
+)
+
+pytestmark = pytest.mark.reconciliation
+
+
+def _canonical(db, batch_id=BATCH_1_ID):
+    return mq.resolve(db, mq.MetricScope.for_batch(USER_1_ID, BRAND_1_ID, batch_id))
+
+
+# ============================================================ surface: dashboard
+
+class TestDashboardSurface:
+    """GET /api/analytics/dashboard against the canonical definitions."""
+
+    @pytest.fixture()
+    def dashboard(self, golden_client, golden_db_with_stored_analytics):
+        response = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    @pytest.mark.xfail(reason="app/routers/analytics.py:254 serves BatchAnalytics, "
+                              "which counts unanalyzed rows as not-mentioned and "
+                              "rounds to int", strict=False)
+    def test_mention_rate_matches_canonical(self, dashboard):
+        assert dashboard["mention_rate"] == gx.B1_MENTION_RATE
+
+    @pytest.mark.xfail(reason="app/routers/analytics.py:262 divides a Yes-only "
+                              "numerator by a Yes+Indirect denominator", strict=False)
+    def test_positive_sentiment_matches_canonical(self, dashboard):
+        assert dashboard["positive_sentiment"] == gx.B1_POSITIVE_SENTIMENT_RATE
+
+    @pytest.mark.xfail(reason="app/services/analytics_cache.py:391 counts competitors "
+                              "only within brand-mentioned responses", strict=False)
+    def test_share_of_voice_matches_canonical(self, dashboard):
+        assert dashboard["share_of_voice"] == gx.B1_SHARE_OF_VOICE
+
+    @pytest.mark.xfail(reason="app/services/analytics_cache.py:283 matches "
+                              "descriptors by bidirectional substring", strict=False)
+    def test_descriptor_match_matches_canonical(self, dashboard):
+        assert dashboard["descriptor_match"] == gx.B1_DESCRIPTOR_MATCH_RATE
+
+    def test_reports_a_total_response_count(self, dashboard):
+        assert "total_responses" in dashboard
+
+    @pytest.mark.xfail(reason="no surface reports what was excluded; an unanalyzed "
+                              "row is indistinguishable from 'not mentioned'",
+                       strict=False)
+    def test_reports_excluded_row_counts(self, dashboard):
+        """Until this passes, a collection failure looks like a reputation drop."""
+        assert "unanalyzed_excluded" in dashboard
+
+
+class TestDashboardInternalConsistency:
+    """Fields within a single Dashboard payload that must agree with each other."""
+
+    @pytest.mark.xfail(reason="analytics.py:262 headline vs analytics_cache.py:698 "
+                              "pie use different denominators", strict=False)
+    def test_positive_sentiment_equals_its_own_pie_slices(self, golden_client,
+                                                          golden_db_with_stored_analytics):
+        dashboard = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        breakdown = golden_client.get(
+            f"/api/analytics/sentiment/breakdown?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}"
+        ).json()
+        slices = (breakdown.get("very_positive_pct", 0) + breakdown.get("positive_pct", 0))
+        assert dashboard["positive_sentiment"] == pytest.approx(slices, abs=0.1)
+
+    @pytest.mark.xfail(reason="value is Leader+Top 3+Featured (metrics.py:489) but the "
+                              "arrow is leader_count only (analytics.py:266-268)",
+                       strict=False)
+    def test_leadership_value_and_delta_use_one_formula(self, golden_client,
+                                                        golden_db_with_stored_analytics,
+                                                        golden_db):
+        sov = golden_client.get(
+            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        brand_row = next((r for r in sov if r.get("is_brand")), None)
+        assert brand_row is not None
+        assert brand_row.get("leadership_visibility") == gx.B1_LEADERSHIP_VISIBILITY
+
+
+# ======================================================== surface: stored cache
+
+class TestStoredBatchAnalytics:
+    @pytest.fixture()
+    def stored(self, golden_db_with_stored_analytics):
+        from app import models
+        return golden_db_with_stored_analytics.query(models.BatchAnalytics).filter(
+            models.BatchAnalytics.batch_id == BATCH_1_ID).first()
+
+    @pytest.mark.xfail(reason="batch_analytics.py:104-105 counts unanalyzed rows in "
+                              "not_mentioned_count", strict=False)
+    def test_mention_rate_matches_canonical(self, stored):
+        assert stored.mention_rate == gx.B1_MENTION_RATE
+
+    @pytest.mark.xfail(reason="batch_analytics.py:98-103 never buckets 'Top 3', so the "
+                              "position counts cannot sum to the total", strict=False)
+    def test_position_counts_sum_to_total(self, stored):
+        counted = (stored.leader_count + stored.featured_count
+                   + stored.listed_count + stored.not_mentioned_count)
+        assert counted == stored.total_responses
+
+    @pytest.mark.xfail(reason="BatchAnalytics has no top3_count column (models.py:161-165)",
+                       strict=False)
+    def test_top_3_is_recorded(self, stored):
+        assert getattr(stored, "top3_count", None) == gx.B1_POSITION_COUNTS["Top 3"]
+
+    def test_stored_rate_is_an_integer_today(self, stored):
+        """Documents the precision loss: batch_analytics.py:135 rounds to int
+        while analytics_cache.py:661 rounds to 2 decimals for the same concept."""
+        assert stored.mention_rate == int(stored.mention_rate)
+
+
+# ========================================================== surface: CSV export
+
+class TestCsvExport:
+    @pytest.fixture()
+    def report_id(self, golden_db):
+        """A monthly report over January 2026, as the scheduler would store it."""
+        import datetime
+
+        from app import models
+        report = models.Report(
+            user_id=USER_1_ID, brand_id=BRAND_1_ID, title="January 2026",
+            report_content="# January 2026", report_type="monthly",
+            period_label="January 2026",
+            start_date=datetime.datetime(2026, 1, 1),
+            end_date=datetime.datetime(2026, 1, 31, 23, 59, 59),
+            total_responses=gx.B1_POPULATION,
+        )
+        golden_db.add(report)
+        golden_db.commit()
+        return report.id
+
+    @pytest.fixture()
+    def rows(self, golden_client, report_id):
+        response = golden_client.get(f"/reports/{report_id}/export/csv")
+        assert response.status_code == 200, response.text
+        return response, list(csv.DictReader(io.StringIO(response.text)))
+
+    @pytest.mark.xfail(reason="reports.py:295 applies no analyzed_at filter, so the CSV "
+                              "row count cannot equal the report's total_responses",
+                       strict=False)
+    def test_row_count_matches_the_reports_population(self, rows):
+        _, parsed = rows
+        assert len(parsed) == gx.B1_POPULATION
+
+    @pytest.mark.xfail(reason="reports.py:333 encodes plain utf-8 with no BOM, so Excel "
+                              "opens it in the system codepage", strict=False)
+    def test_has_utf8_bom_for_excel(self, rows):
+        response, _ = rows
+        assert response.content.startswith(b"\xef\xbb\xbf")
+
+    @pytest.mark.xfail(reason="neither export includes batch_id, so a spreadsheet cannot "
+                              "be reconciled to the dashboard's batch selector",
+                       strict=False)
+    def test_includes_batch_id(self, rows):
+        _, parsed = rows
+        assert parsed and "batch_id" in {k.lower() for k in parsed[0]}
+
+    def test_multiline_bodies_do_not_break_row_alignment(self, rows):
+        """csv.writer quotes embedded newlines correctly; this guards a regression."""
+        _, parsed = rows
+        assert all(len(row) == len(parsed[0]) for row in parsed)
+
+    def test_timestamps_carry_no_offset_today(self, rows):
+        """reports.py:290 writes naive UTC while the UI displayed Eastern, so a
+        user filtering the spreadsheet by date sees a different day."""
+        _, parsed = rows
+        if not parsed:
+            pytest.skip("no rows")
+        key = next((k for k in parsed[0] if "time" in k.lower() or "date" in k.lower()), None)
+        if key is None:
+            pytest.skip("no timestamp column")
+        assert "+" not in parsed[0][key] and "Z" not in parsed[0][key]
+
+
+# ======================================================== surface: Excel export
+
+class TestExcelExport:
+    @pytest.fixture()
+    def workbook(self, golden_client):
+        import openpyxl
+        response = golden_client.get(f"/responses/export/excel?brand_id={BRAND_1_ID}")
+        assert response.status_code == 200, response.text[:500]
+        return openpyxl.load_workbook(io.BytesIO(response.content))
+
+    @pytest.mark.xfail(reason="responses.py:206 -> openpyxl/cell/cell.py:163 slices at "
+                              "32767 chars with no error and no marker", strict=False)
+    def test_long_answers_are_not_silently_truncated(self, workbook):
+        """The reported symptom: answers cut off in the spreadsheet."""
+        sheet = workbook.active
+        longest = max(
+            (len(cell.value) for row in sheet.iter_rows(min_row=2)
+             for cell in row if isinstance(cell.value, str)),
+            default=0)
+        assert longest >= gx.LONG_RESPONSE_LENGTH
+
+    @pytest.mark.xfail(reason="responses.py:170-183 omits Query Text, so an exported "
+                              "row identifies its question only by id", strict=False)
+    def test_includes_query_text(self, workbook):
+        headers = {str(c.value).lower() for c in next(workbook.active.iter_rows(max_row=1))}
+        assert any("query text" in h for h in headers)
+
+    @pytest.mark.xfail(reason="neither export includes batch_id", strict=False)
+    def test_includes_batch_id(self, workbook):
+        headers = {str(c.value).lower() for c in next(workbook.active.iter_rows(max_row=1))}
+        assert any("batch" in h for h in headers)
+
+    @pytest.mark.xfail(reason="responses.py:206 assigns response_text with no guard; "
+                              "openpyxl raises IllegalCharacterError at assignment "
+                              "(openpyxl/cell/cell.py:164) for any control character, "
+                              "failing the whole export", strict=False)
+    def test_export_survives_control_characters(self, golden_client):
+        """One vertical tab anywhere in the data takes down the entire download.
+
+        Verified directly: assigning the fixture's \\x0b body raises
+        IllegalCharacterError on the cell, before save is ever reached. Because
+        the export is all-or-nothing, a single bad character makes the
+        spreadsheet unavailable for the whole brand.
+        """
+        response = golden_client.get(f"/responses/export/excel?brand_id={BRAND_1_ID}")
+        assert response.status_code == 200, (
+            "Excel export failed outright. responses.py:156 has no guard for "
+            f"openpyxl's ILLEGAL_CHARACTERS_RE. Body: {response.text[:300]}")
+
+
+class TestExcelExportScoping:
+    @pytest.mark.xfail(reason="responses.py:159 filters by current_user.id instead of "
+                              "get_data_owner_user_id (app/utils/brand_access.py:170), "
+                              "so shared brands 404", strict=False)
+    def test_shared_brand_users_can_export(self, golden_session_factory, golden_db):
+        """responses.py:159 filters by current_user.id instead of the brand owner,
+        so a user viewing a shared brand sees the table but cannot export it."""
+        from fastapi import Depends
+        from fastapi.testclient import TestClient
+        from sqlalchemy.orm import Session
+
+        from app import models
+        from app.auth import get_current_user
+        from app.database import get_db
+        from app.main import app
+        from app.utils.brand_access import get_active_brand_id
+
+        shared_user_id = 900
+        golden_db.add(models.User(
+            id=shared_user_id, email="shared@golden.test", full_name="Shared Viewer",
+            is_active=True, is_admin=False, is_invited=True))
+        golden_db.add(models.BrandShare(
+            brand_id=BRAND_1_ID, user_id=shared_user_id,
+            shared_by_user_id=USER_1_ID, permission_level="edit"))
+        golden_db.commit()
+
+        def override_get_db():
+            db = golden_session_factory()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        def override_get_current_user(db: Session = Depends(get_db)):
+            return db.query(models.User).filter(models.User.id == shared_user_id).first()
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_active_brand_id] = lambda: BRAND_1_ID
+        try:
+            response = TestClient(app).get(f"/responses/export/excel?brand_id={BRAND_1_ID}")
+            assert response.status_code == 200, (
+                "Shared-brand export failed. responses.py:159 uses current_user.id; "
+                "every other read path resolves the owner with "
+                f"get_data_owner_user_id. Status {response.status_code}")
+        finally:
+            app.dependency_overrides.clear()
+
+
+# ==================================================== surface: highlights email
+
+class TestHighlightsSurface:
+    @pytest.fixture()
+    def computed(self, golden_db):
+        from app.routers import highlights
+
+        from app import models
+        responses = golden_db.query(models.Response).filter(
+            models.Response.brand_id == BRAND_1_ID,
+            models.Response.batch_id == BATCH_1_ID).all()
+        non_branded = highlights._get_non_branded_query_ids(golden_db, BRAND_1_ID)
+        return highlights, responses, non_branded
+
+    @pytest.mark.xfail(reason="highlights.py:146 applies no analyzed_at filter, so "
+                              "unanalyzed rows sit in the denominator", strict=False)
+    def test_mention_rate_matches_canonical(self, computed):
+        highlights, responses, non_branded = computed
+        _, _, rate = highlights._compute_mention_rate(responses, non_branded)
+        assert rate == gx.B1_MENTION_RATE
+
+    @pytest.mark.xfail(reason="highlights.py:194 counts descriptors over Yes and "
+                              "Indirect without normalization, and is called without "
+                              "the non-branded filter at :489", strict=False)
+    def test_descriptor_counts_match_canonical(self, computed, golden_db):
+        highlights, responses, _ = computed
+        emailed = dict(highlights._compute_descriptors(responses))
+        assert emailed == gx.B1_DESCRIPTOR_FREQUENCY
+
+
+# ========================================================= cross-surface matrix
+
+def _dashboard_mention_rate(client, db):
+    body = client.get(
+        f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+    return body.get("mention_rate")
+
+
+def _stored_mention_rate(client, db):
+    from app import models
+    row = db.query(models.BatchAnalytics).filter(
+        models.BatchAnalytics.batch_id == BATCH_1_ID).first()
+    return row.mention_rate if row else None
+
+
+def _highlights_mention_rate(client, db):
+    from app.routers import highlights
+
+    from app import models
+    responses = db.query(models.Response).filter(
+        models.Response.brand_id == BRAND_1_ID,
+        models.Response.batch_id == BATCH_1_ID).all()
+    non_branded = highlights._get_non_branded_query_ids(db, BRAND_1_ID)
+    return highlights._compute_mention_rate(responses, non_branded)[2]
+
+
+def _legacy_analytics_mention_rate(client, db):
+    from app import analytics
+    return analytics.get_dashboard_metrics(
+        db, user_id=USER_1_ID, brand_id=BRAND_1_ID, batch_id=BATCH_1_ID
+    ).get("mention_rate")
+
+
+def _report_mention_rate(client, db):
+    """What generate_report.py:394 computes for the same window."""
+    import datetime
+    import importlib
+
+    module = importlib.import_module("scripts.admin.generate_report")
+    metrics = module.calculate_period_metrics(
+        db, USER_1_ID, BRAND_1_ID,
+        datetime.datetime(2026, 1, 1), datetime.datetime(2026, 2, 1))
+    return metrics.get("mention_rate")
+
+
+def _canonical_mention_rate(client, db):
+    return mc.mention_rate(_canonical(db)).value
+
+
+MENTION_RATE_SURFACES = {
+    "dashboard endpoint": _dashboard_mention_rate,
+    "stored BatchAnalytics": _stored_mention_rate,
+    "highlights email": _highlights_mention_rate,
+    "legacy app/analytics.py": _legacy_analytics_mention_rate,
+    "generated report": _report_mention_rate,
+    "CANONICAL metrics_core": _canonical_mention_rate,
+}
+
+
+@pytest.mark.xfail(reason="the whole point of the audit: six surfaces, six answers "
+                          "for one brand and one batch", strict=False)
+def test_all_surfaces_agree_on_mention_rate(golden_client,
+                                            golden_db_with_stored_analytics):
+    """The headline reconciliation. On failure it prints the full matrix.
+
+    That printed table is the deliverable: it is the evidence that the numbers
+    disagree, and after Phase 3 it becomes the evidence that they no longer do.
+    """
+    db = golden_db_with_stored_analytics
+    observed = {}
+    for name, extractor in MENTION_RATE_SURFACES.items():
+        try:
+            observed[name] = extractor(golden_client, db)
+        except Exception as exc:  # noqa: BLE001 - a crashing surface is a finding
+            observed[name] = f"ERROR: {type(exc).__name__}: {exc}"
+
+    width = max(len(name) for name in observed)
+    lines = ["", "Mention rate for brand 1 / batch 1, by surface:", ""]
+    for name, value in observed.items():
+        lines.append(f"    {name.ljust(width)}  {value}")
+    numeric = [v for v in observed.values() if isinstance(v, (int, float))]
+    if numeric:
+        lines.append("")
+        lines.append(f"    {'SPREAD'.ljust(width)}  "
+                     f"{round(max(numeric) - min(numeric), 2)} percentage points")
+    print("\n".join(lines))
+
+    distinct = {round(float(v), 1) for v in numeric}
+    assert len(distinct) == 1, (
+        "Surfaces disagree on mention rate:\n" + "\n".join(lines))

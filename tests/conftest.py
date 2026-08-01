@@ -59,3 +59,56 @@ def golden_db(golden_session_factory):
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture(scope="function")
+def golden_db_with_stored_analytics(golden_db):
+    """Golden database plus batch_analytics rows written by the CURRENT code.
+
+    Opt-in, because those rows are "what the app stored", not ground truth. The
+    reconciliation harness needs them since the Dashboard serves several fields
+    straight off BatchAnalytics (app/routers/analytics.py:254-274).
+    """
+    from tests.fixtures.golden_dataset import seed_batch_analytics
+
+    seed_batch_analytics(golden_db)
+    return golden_db
+
+
+@pytest.fixture(scope="function")
+def golden_client(golden_session_factory):
+    """TestClient wired to the golden database.
+
+    Follows the override pattern established in tests/test_responses_router.py:82.
+    get_current_user takes the request's session via Depends so the User stays
+    attached for the life of the request.
+    """
+    from fastapi import Depends
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import Session
+
+    from app import models
+    from app.auth import get_current_user
+    from app.database import get_db
+    from app.main import app
+    from app.utils.brand_access import get_active_brand_id
+    from tests.fixtures.golden_dataset import BRAND_1_ID, USER_1_ID
+
+    def override_get_db():
+        db = golden_session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def override_get_current_user(db: Session = Depends(get_db)):
+        return db.query(models.User).filter(models.User.id == USER_1_ID).first()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    app.dependency_overrides[get_active_brand_id] = lambda: BRAND_1_ID
+
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
