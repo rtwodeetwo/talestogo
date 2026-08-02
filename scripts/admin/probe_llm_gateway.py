@@ -264,6 +264,90 @@ def probe_large_payload(client: OpenAI, model: str) -> Result:
     return result.mark(True, "accepted")
 
 
+#: A question that can only be answered by retrieving a page, with an explicit
+#: escape hatch. The escape hatch is what makes the test decisive: a model that
+#: did not search says so instead of writing plausible prose, and the two
+#: outcomes stop looking alike.
+GROUNDING_CONTROL_PROMPT = (
+    "List the exact headlines and publication dates of the three most recent "
+    "news items currently on https://www.pppl.gov/news . If you cannot retrieve "
+    "the page, say 'CANNOT RETRIEVE' and nothing else.")
+
+
+def _responses_call(base_url: str, api_key: str, model: str, prompt: str,
+                    with_tools: bool, timeout: float):
+    body: Dict[str, Any] = {"model": model, "input": prompt}
+    if with_tools:
+        body["tools"] = [{"type": "web_search"}]
+    response = httpx.post(
+        f"{base_url.rstrip('/')}/responses",
+        headers={"Authorization": f"Bearer {api_key}",
+                 "Content-Type": "application/json"},
+        json=body, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    items = payload.get("output", []) or []
+    text = " ".join(part.get("text", "")
+                    for item in items for part in (item.get("content") or []))
+    return {
+        "types": [item.get("type") for item in items],
+        "text": text.strip(),
+        "unresolved_tool_calls": [item.get("name") for item in items
+                                  if item.get("type") == "function_call"],
+        "citations": {annotation["url"]
+                      for item in items
+                      for part in (item.get("content") or [])
+                      for annotation in (part.get("annotations") or [])
+                      if annotation.get("url")},
+    }
+
+
+def probe_grounding_control(base_url: str, api_key: str, model: str,
+                            timeout: float) -> Result:
+    """Does the search tool actually change the answer?
+
+    An HTTP 200 proves only that the gateway accepted the request. A gateway can
+    forward the tool declaration without executing the search, in which case the
+    model emits a tool call nobody runs and then answers from memory anyway,
+    often opening with "Based on my search". That is worse than a plain refusal:
+    it is a confident claim resting on a retrieval that never happened, and it
+    would be stored as a grounded observation.
+
+    Running the same prompt with and without the tool is what tells them apart.
+    """
+    result = Result("grounding actually runs")
+
+    def call():
+        return (_responses_call(base_url, api_key, model,
+                                GROUNDING_CONTROL_PROMPT, True, timeout),
+                _responses_call(base_url, api_key, model,
+                                GROUNDING_CONTROL_PROMPT, False, timeout))
+
+    pair, error, result.seconds = _timed(call)
+    if error:
+        return result.mark(False, f"{type(error).__name__}: {str(error)[:160]}")
+
+    grounded, control = pair
+    refused = "CANNOT RETRIEVE" in grounded["text"].upper()
+    searched = ("web_search_call" in grounded["types"]
+                or bool(grounded["citations"]))
+
+    if refused or (not searched and not grounded["citations"]):
+        detail = "tool had no effect; the answer matches the no-tool control"
+        if grounded["unresolved_tool_calls"]:
+            detail += (f"; {len(grounded['unresolved_tool_calls'])} unresolved "
+                       "tool call(s) returned to the client and never executed")
+        return result.mark(False, detail)
+
+    same = grounded["text"][:200] == control["text"][:200]
+    if same:
+        return result.mark(False, "identical answer with and without the tool")
+    return result.mark(
+        True, f"{len(grounded['citations'])} citations, control refused"
+              if "CANNOT RETRIEVE" in control["text"].upper()
+              else f"{len(grounded['citations'])} citations")
+
+
 def probe_responses_api(base_url: str, api_key: str, model: str) -> Result:
     """Whether the gateway passes through OpenAI's Responses API.
 
@@ -334,6 +418,8 @@ def main() -> int:
                 results.append(probe_tool_round_trip(client, model))
             if not args.skip_large:
                 results.append(probe_large_payload(client, model))
+            results.append(probe_grounding_control(
+                args.base_url, api_key, model, args.timeout))
         for result in results:
             print(result.line())
         print()
@@ -345,6 +431,8 @@ def main() -> int:
                                    and by_name["tool call offered"].ok
                                    and by_name.get("tool result accepted")
                                    and by_name["tool result accepted"].ok),
+            "grounded": bool(by_name.get("grounding actually runs")
+                             and by_name["grounding actually runs"].ok),
             "slowest": max(r.seconds for r in results),
         }
 
@@ -360,6 +448,7 @@ def main() -> int:
         print(f"\n  {model}")
         print(f"    collection      {'yes' if verdict['collection'] else 'NO'}")
         print(f"    investigations  {'yes' if verdict['investigations'] else 'NO'}")
+        print(f"    grounded        {'yes' if verdict['grounded'] else 'NO'}")
         print(f"    slowest probe   {verdict['slowest']:.1f}s")
 
     print(f"\n  grounded collection through this gateway: "
