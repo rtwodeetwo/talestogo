@@ -229,6 +229,49 @@ See which descriptors are associated with your brand.
 - Positive vs. negative descriptors
 - Trends over time
 
+### Investigations (Analytics > Investigations)
+
+The other analytics pages tell you *that* a number moved. An investigation works
+out *why*. If your mention rate fell twelve points, an investigation determines
+whether that was one platform re-ranking its answers, a competitor's PR push, a
+single query flipping, or a collection run that partly failed.
+
+**To run one:**
+1. Go to Analytics > Investigations
+2. Click "Investigate" to compare the most recent month against the one before it
+3. Or use the dropdown arrow next to the button to compare quarters, or the
+   latest collection against the previous one
+
+An investigation takes a few minutes. The page updates on its own while one is
+running, so you can leave it open.
+
+**Reading the result:**
+
+Each investigation is a card, newest first. Click one to expand it.
+
+- **Summary** - what happened, in a few paragraphs, with specific numbers
+- **Key findings** - the evidence, citing platforms, queries, and figures
+- **Recommended actions** - what to consider doing about it
+- **Limitations** - anything the investigation could not check, and what that
+  means for its conclusions. This is information, not an error. An investigation
+  with no web-search provider configured still runs on your collected data and
+  tells you what it could not verify
+- **Show agent trace** - the individual steps taken, if you want to audit how a
+  conclusion was reached
+
+**Automatic investigations.** Tales opens an investigation on its own when a
+metric moves more than its threshold between two periods: 10 points for mention
+rate or share of voice, 15 for positive sentiment or leadership visibility.
+Competitor share of voice is watched per competitor, so a rival surging gets
+explained even when your own share barely moves. These are marked "auto" and
+appear alongside the ones you run yourself. Your administrator can retune or
+disable them.
+
+**A note on what this catches.** An investigation checks data quality on both
+sides of the comparison before attributing anything to reputation. A batch of
+unanalyzed responses is a collection failure, not a reputation drop, and the
+investigation will say so rather than inventing a reputational story for it.
+
 ---
 
 ## Reports

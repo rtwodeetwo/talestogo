@@ -1,6 +1,9 @@
 # Environment variables - IMPORTANT!
 .env
 .env.*
+# ...but the checked-in templates are not secrets and must stay tracked.
+!.env.template
+!**/.env.template
 
 # Python virtual environments
 venv/

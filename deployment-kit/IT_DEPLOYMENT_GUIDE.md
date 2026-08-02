@@ -8,10 +8,11 @@ This guide is for IT teams deploying Tales at their organization. Tales is an AI
 2. [Quick Start](#quick-start)
 3. [Configuration](#configuration)
 4. [Initial Admin Setup](#initial-admin-setup)
-5. [Verification](#verification)
-6. [Optional: OAuth Configuration](#optional-oauth-configuration)
-7. [Maintenance](#maintenance)
-8. [Troubleshooting](#troubleshooting)
+5. [Investigations](#investigations)
+6. [Verification](#verification)
+7. [Optional: OAuth Configuration](#optional-oauth-configuration)
+8. [Maintenance](#maintenance)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -88,7 +89,7 @@ nano .env  # or use your preferred editor
 ```bash
 # Security (generate unique values for your deployment)
 APP_SECRET=<generate-random-string>
-ENCRYPTION_KEY=<generate-random-string>
+ENCRYPTION_KEY=<generate-a-fernet-key>
 
 # LLM API Keys — set at least one. Configure provider details in the Admin UI
 # after first login (Admin → LLM Providers).
@@ -101,10 +102,21 @@ AZURE_OPENAI_API_KEY=<optional>
 
 **Generate secure random keys:**
 
+`APP_SECRET` can be any random string:
+
 ```bash
-# Run this twice to generate APP_SECRET and ENCRYPTION_KEY
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+`ENCRYPTION_KEY` must be a valid Fernet key, so it needs a different command:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+A Fernet key is exactly 32 url-safe base64-encoded bytes, which is 44 characters with the trailing `=` intact. `secrets.token_urlsafe(32)` returns 43 characters and will be rejected, and the application will fail to start. Do not use it for this variable.
+
+`setup.sh` generates both keys correctly for you, so you can skip this step if you use it.
 
 ### 3. Start the Application
 
@@ -266,6 +278,21 @@ Configure these settings:
 - **After changing domains** - if you move to a new URL
 - **For white-labeling** - to customize the application name in emails
 
+### Testing Your Configuration
+
+After saving settings:
+1. Invite a test user (or yourself at a different email)
+2. Check the invitation email for:
+   - Correct URL in the login link
+   - Correct admin contact email
+   - Your organization's site name in the subject/header
+
+### Notes
+
+- If settings are left empty, the system uses environment variables as fallbacks
+- Changes take effect immediately for new emails
+- Existing emails (already sent) are not affected
+
 ---
 
 ## Authentication
@@ -387,6 +414,40 @@ Each API type reads from a specific environment variable:
 
 Only providers whose environment variable is set will work. If an API key is missing, the "Test" button will show an error.
 
+### Editing Provider Settings
+
+Click on an existing provider card to modify its settings. You can change the display name, model name, color, and enable/disable options.
+
+### Adding Custom Providers
+
+For providers beyond the 4 defaults (e.g., Mistral, DeepSeek), you can add up to 2 custom providers:
+
+1. Add the API key to `.env` with a custom variable name:
+   ```bash
+   MISTRAL_API_KEY=your-mistral-key
+   ```
+
+2. Restart the application
+
+3. In Admin UI, click "Add LLM" and fill in:
+   - **Display Name** - "Mistral"
+   - **API Type** - "OpenAI Compatible" (most custom providers use this)
+   - **Model Name** - The model ID (e.g., "mistral-large-latest")
+   - **Environment Variable Name** - "MISTRAL_API_KEY" (must match your `.env`)
+   - **API Endpoint** - The provider's API URL (e.g., "https://api.mistral.ai")
+
+4. Click "Add LLM" and test the connection
+
+### Supported API Types
+
+| API Type | Description | Example Providers |
+|----------|-------------|-------------------|
+| OpenAI | OpenAI API | ChatGPT (GPT-4, GPT-3.5) |
+| Anthropic | Anthropic API | Claude models |
+| Google | Google GenAI API | Gemini models |
+| Azure | Azure OpenAI (with `api_version` + resource URL + deployment name) | Your Azure-hosted GPT-4o, GPT-4, etc. |
+| OpenAI Compatible | Any OpenAI-compatible API | Perplexity, Mistral, local LLMs |
+
 ### Provider Capabilities
 
 Tales is provider-agnostic — pick whichever provider(s) fit your environment. The one you flag `use_for_analysis=True` handles response analysis and brand auto-generation. The "State of the LLMs" report section needs a provider with web search:
@@ -402,6 +463,73 @@ Tales is provider-agnostic — pick whichever provider(s) fit your environment. 
 | **Azure AI Foundry Agents** | Yes (single-vendor Azure story) | Requires `pip install talestogo[azure-foundry]`. Uses Foundry Prompt Agents + Grounding with Bing Search. Auth via Azure Entra ID. |
 
 If no web-search-capable provider is configured (e.g., an OpenAI-only deployment without Bing), the "State of the LLMs" section will be omitted from generated reports. **All other report sections will work normally.**
+
+---
+
+## Investigations
+
+An investigation explains *why* metrics moved between two comparable periods,
+rather than only reporting that they did. Users run them from Analytics >
+Investigations, and Tales also opens them automatically when a metric crosses a
+threshold.
+
+**This is the one feature that spends LLM tokens without a person asking.** Read
+this section before deploying, and decide whether you want the automatic
+triggers on.
+
+### Cost and resource profile
+
+- An investigation is an agent loop: it calls your configured LLM repeatedly,
+  capped at **15 iterations** per run.
+- Each run holds a database connection for the duration, which is typically a
+  few minutes. Concurrency is capped at **4** simultaneous investigations.
+- Automatic triggers are evaluated after each collection batch is analyzed.
+  Results are deduplicated on brand plus comparison period, so a given period
+  produces at most one automatic investigation.
+
+### Which provider runs it
+
+Investigations use whichever LLM providers you have already configured under
+**Admin > LLM Providers**. Nothing is hardcoded. The selection order is
+Anthropic, then OpenAI, then Azure, then Google, then any other
+OpenAI-compatible endpoint.
+
+Perplexity's `sonar` models are skipped because they do not support function
+calling, which the agent loop requires. If Perplexity is your only provider,
+investigations will not run.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INVESTIGATIONS_AUTO_TRIGGER` | `true` | Set to `false` to disable automatic investigations. Users can still run them manually from the UI. |
+| `INVESTIGATION_THRESHOLD_MENTION_RATE` | `10.0` | Percentage points of movement that opens an investigation |
+| `INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE` | `15.0` | As above, for positive sentiment |
+| `INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY` | `15.0` | As above, for leadership visibility |
+| `INVESTIGATION_THRESHOLD_SHARE_OF_VOICE` | `10.0` | As above, for the brand's share of voice and for any single competitor's |
+
+Thresholds are absolute percentage points and are read on each evaluation, so
+retuning them does not require a restart. They currently apply deployment-wide
+rather than per brand.
+
+**When to turn the automatic triggers off.** Around a data import or a change in
+collection method, a large movement is expected and already understood. Setting
+`INVESTIGATIONS_AUTO_TRIGGER=false` for that window avoids spending tokens
+explaining something you did on purpose.
+
+### Behavior without a web-search provider
+
+Investigations degrade rather than fail. With no web-search-capable provider
+configured (Gemini, Perplexity, Bing Search v7, or Azure AI Foundry Agents), a
+run still completes using your collected data, and records what it could not
+check under "Limitations" on the investigation card. This is surfaced to users
+as information rather than as an error.
+
+### What it will not do
+
+Automatic investigations never fire when either comparison window is empty. A
+period with no collection would otherwise read as a total collapse across every
+metric.
 
 ---
 
@@ -520,13 +648,17 @@ All responses include the following security headers:
 | `X-XSS-Protection` | `1; mode=block` | XSS protection for older browsers |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | Restricts browser feature access |
 
+### Content Security Policy (CSP)
+
+Tales uses a nonce-based CSP for style-src, which allows MUI/Material-UI styles while blocking unauthorized inline styles. A unique nonce is generated per request and injected into the HTML response. No configuration is needed; this works automatically.
+
 ### Additional Protections
 
-- **Content Security Policy (CSP)**: Nonce-based CSP for style-src, compatible with MUI/Material-UI
 - **Path traversal protection**: Frontend file serving validates paths stay within the expected directory
-- **Cloud metadata blocking**: Requests to cloud provider metadata endpoints (AWS, GCP, Azure) are blocked
+- **Cloud metadata blocking**: Requests to cloud provider metadata endpoints (AWS, GCP, Azure) are blocked to prevent SSRF attacks
 - **Self-hosted fonts**: All fonts are served locally, eliminating external CDN dependencies
 - **Rate limiting**: API endpoints are rate-limited to prevent abuse
+- **Password validation**: Login password fields enforce a maximum length of 128 characters
 
 ---
 
