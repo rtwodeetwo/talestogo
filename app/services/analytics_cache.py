@@ -95,7 +95,8 @@ class AnalyticsCache:
             if self.date_from:
                 query = query.filter(models.Response.timestamp >= self.date_from)
             if self.date_to:
-                query = query.filter(models.Response.timestamp <= self.date_to)
+                # Half-open [date_from, date_to).
+                query = query.filter(models.Response.timestamp < self.date_to)
 
         # Only try to filter by brand_in_query if Query table has data
         if not include_brand_in_query:

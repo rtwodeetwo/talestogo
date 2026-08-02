@@ -183,6 +183,26 @@ B3_MENTION_RATE = 100.0
 
 
 # =============================================================================
+# "January 2026" as a PERIOD (what the Data Exports page downloads)
+#
+# The Eastern January window is [2026-01-01 05:00Z, 2026-02-01 05:00Z). That is
+# all 57 batch-1 rows, plus batch 2's TZ_A row at 2026-02-01T02:30Z, which is
+# January 31 in Eastern. So a period export is deliberately NOT the same row set
+# as a batch export, and the fixture proves it.
+#
+#   57 batch-1 rows + 1 straddler         = 58 rows
+#   counted: 40 from batch 1, + TZ_A      = 41
+#   excluded: 10 branded (9 analyzed + 1 not), 5 unanalyzed organic,
+#             1 off-enum, 1 orphan        = 17
+#   41 + 17 = 58
+# =============================================================================
+
+JAN_EASTERN_TOTAL_ROWS = 58
+JAN_EASTERN_COUNTED = 41
+JAN_EASTERN_EXCLUDED = 17
+
+
+# =============================================================================
 # Export integrity
 # =============================================================================
 

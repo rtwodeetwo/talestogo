@@ -18,14 +18,11 @@ import pytest
 from app.services.metrics_core import MetricPopulation, ResponseRecord
 from app.routers.highlights import (
     _build_quarterly_fact_sheet,
-    _build_verified_fact_sheet,
     _compute_descriptors,
     _compute_mention_rate,
     _compute_monthly_breakdown,
     _compute_platform_rates,
     _compute_sentiment,
-    _get_month_before_range,
-    _get_previous_month_range,
 )
 
 _next_id = iter(range(1, 10_000))
@@ -178,37 +175,7 @@ class TestComputeMonthlyBreakdown:
         assert breakdown["June 2026"]["rate"] == 100.0
 
 
-class TestMonthRanges:
-    def test_previous_month_january_rollover(self):
-        label, start, end = _get_previous_month_range(now=datetime(2026, 1, 10))
-        assert label == "December 2025"
-        assert start == datetime(2025, 12, 1)
-        assert end == datetime(2025, 12, 31, 23, 59, 59)
-
-    def test_month_before(self):
-        prev_start, prev_end = _get_month_before_range(datetime(2026, 1, 1))
-        assert prev_start == datetime(2025, 12, 1)
-        assert prev_end == datetime(2025, 12, 31, 23, 59, 59)
-
-
 class TestFactSheets:
-    def test_monthly_fact_sheet_quotes_numbers(self):
-        sheet = _build_verified_fact_sheet(
-            period_label="June 2026",
-            total=120, mentioned=66, mention_rate=55.0,
-            prev_label="May 2026", prev_rate=50.5,
-            platform_rates={"ChatGPT": {"total": 60, "mentioned": 40, "rate": 66.7}},
-            sentiment={"Positive": {"count": 30, "pct": 75.0}}, sentiment_total=40,
-            prev_sentiment={},
-            descriptors=[("innovative", 12)],
-            query_rates={"Q001": {"total": 10, "mentioned": 9, "rate": 90.0, "text": "best labs"}},
-            batch_trends=[{"date": "Jun 07", "rate": 54.0, "total": 30}],
-        )
-        assert "55.0%" in sheet
-        assert "PREVIOUS MONTH (May 2026): 50.5%" in sheet
-        assert "+4.5 percentage points" in sheet
-        assert "innovative: 12" in sheet
-
     def test_quarterly_fact_sheet_quotes_numbers(self):
         sheet = _build_quarterly_fact_sheet(
             quarter_label="FY2026 Q3", prev_quarter_label="FY2026 Q2",
@@ -234,7 +201,7 @@ class TestEndpointAuth:
 
     def test_503_when_secret_unset(self, client, monkeypatch):
         monkeypatch.delenv("HIGHLIGHTS_CRON_SECRET", raising=False)
-        resp = client.post("/highlights/monthly-check", headers={"X-Cron-Secret": "anything"})
+        resp = client.post("/highlights/quarterly-check", headers={"X-Cron-Secret": "anything"})
         assert resp.status_code == 503
 
     def test_403_on_bad_secret(self, client, monkeypatch):
@@ -244,5 +211,5 @@ class TestEndpointAuth:
 
     def test_403_on_missing_header(self, client, monkeypatch):
         monkeypatch.setenv("HIGHLIGHTS_CRON_SECRET", "correct-secret")
-        resp = client.post("/highlights/monthly-check")
+        resp = client.post("/highlights/quarterly-check")
         assert resp.status_code == 403

@@ -40,8 +40,8 @@ UNAVAILABLE = "n/a"
 def _safe(fn: Callable[[], Any]) -> Any:
     """Run a legacy implementation, recording failures instead of aborting.
 
-    Several of these raise on the fixture (chart_generator's missing 'top_3' key
-    is the known example), and a crash IS a finding worth reporting.
+    A legacy implementation that raises is itself a finding, so failures are
+    recorded rather than aborting the comparison.
     """
     try:
         return fn()
@@ -81,8 +81,8 @@ def collect_mention_rates(db, user_id: int, brand_id: int,
         ).get("mention_rate")))
 
     # app/services/metrics.py:161 -- 'Yes' only, and the caller is expected to
-    # pre-filter branded queries. generate_report.py:2214 does not.
-    results["metrics.py:161 (unfiltered, as generate_report calls it)"] = _safe(
+    # pre-filter branded queries, which several callers did not.
+    results["metrics.py:161 (Yes-only, unfiltered)"] = _safe(
         lambda: _pct(legacy_metrics.calculate_mention_metrics(responses).get("yes_pct")))
     results["metrics.py:161 (correctly pre-filtered)"] = _safe(lambda: _pct(
         legacy_metrics.calculate_mention_metrics(
@@ -198,7 +198,6 @@ def collect_positioning(db, user_id: int, brand_id: int,
     results: Dict[str, Any] = {}
 
     # metrics.py:257 -- 1-4 scale, no 'Top 3' key, mentions-only denominator,
-    # integer-rounded, then rendered as "x/5.0" by generate_report.py:1776.
     results["metrics.py:257 (avg, 1-4 scale, int)"] = _safe(lambda:
         legacy_metrics.calculate_positioning_average(responses, queries))
 
@@ -210,12 +209,6 @@ def collect_positioning(db, user_id: int, brand_id: int,
     if batch_id is not None:
         results["routers/analytics.py:268 (leader only, the trend arrow)"] = _safe(
             lambda: _pct(_leader_only_pct(db, batch_id)))
-
-    # The chart that never renders.
-    def _positioning_chart_keys():
-        metrics = legacy_metrics.calculate_positioning_metrics(responses, queries)
-        return metrics["top_3"]  # chart_generator.py:143 reads this key
-    results["chart_generator.py:143 (positioning bar chart)"] = _safe(_positioning_chart_keys)
 
     results["analytics_cache positioning"] = _safe(lambda:
         AnalyticsCache(db, user_id=user_id, brand_id=brand_id,

@@ -75,6 +75,12 @@ def get_period_comparison_ranges(
 
     now is injectable for tests; it defaults to the current UTC time.
 
+    Boundaries are computed in the reporting timezone and converted to UTC for
+    querying, so "February" means the same 28 days the user sees on screen.
+    Response.timestamp is naive UTC while the UI renders America/New_York, so
+    boundaries drawn in naive UTC put a response collected at 2026-02-01T02:30Z
+    in February even though every date shown for it reads January 31.
+
     Returns:
         (current_start, current_end, current_label,
          previous_start, previous_end, previous_label)
@@ -83,10 +89,12 @@ def get_period_comparison_ranges(
         now = datetime.utcnow()
 
     def month_bounds(year: int, month: int) -> Tuple[datetime, datetime]:
-        start = datetime(year, month, 1, 0, 0, 0)
-        last_day = calendar.monthrange(year, month)[1]
-        end = datetime(year, month, last_day, 23, 59, 59)
-        return start, end
+        # Delegates to metrics_query so the dashboard, the exports and the
+        # highlights emails all resolve a period to exactly one window.
+        # The end is EXCLUSIVE, half-open [start, end); the previous 23:59:59
+        # convention silently dropped the final second of every period.
+        from .metrics_query import month_bounds as tz_month_bounds
+        return tz_month_bounds(year, month)
 
     if period == 'quarter':
         fiscal_start_month = brand_fiscal_start_month(db, brand_id)

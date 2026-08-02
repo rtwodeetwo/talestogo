@@ -1,19 +1,15 @@
 """
 Background scheduler service for automated tasks
 
-SCHEDULING SYSTEM (Updated - January 2026):
+SCHEDULING SYSTEM:
 - Collection + Analysis: On the 1st, 7th, 14th, and 21st of each month at 6:30 AM UTC
-  - Analysis runs immediately after each collection (silently, no email)
-- Reports: Generated on fixed schedules:
-  - Monthly: 1st of each month at 6:00 AM UTC (previous month)
-  - Quarterly: Apr 1, Jul 1, Oct 1, Jan 1 at 7:00 AM UTC (previous quarter)
-  - Annual: Jan 1 at 8:00 AM UTC (previous year)
+  - Analysis runs immediately after each collection
+- Optional highlights emails, gated by HIGHLIGHTS_ENABLED
 
-KEY BEHAVIORS:
-- Collection and analysis run silently (no email notifications)
-- Email notifications ONLY sent when reports are generated
-- Manual runs still available with immediate analysis and report
-- On Jan 1: Both Q4 quarterly and annual reports are generated
+Tales does not generate written reports. Period figures are computed on demand
+from app/services/metrics_core.py, and the underlying data is available as a
+spreadsheet per period from the Exports page, so there is nothing to pre-render
+on a schedule.
 
 FIXED ISSUES:
 - Uses direct data_pipeline calls instead of broken subprocess scripts
@@ -120,11 +116,9 @@ def get_period_date_range(period_type: str, reference_date: datetime) -> tuple:
             - For annual: previous complete year
 
     Boundary convention: the end date here is INCLUSIVE (last second of the
-    period, 23:59:59). The helpers in scripts/admin/generate_report.py use an
-    exclusive first-of-next-period end instead. The scheduler always passes
-    these explicit dates through to the report script, so the two conventions
-    never mix within one report; a response stamped in the final second of a
-    period is included either way except in that one-second window.
+    period). Metric windows use the half-open [start, end) form from
+    app/services/metrics_query.py; this helper is only used for scheduling
+    labels, not for computing any reported figure.
     """
     if period_type == 'monthly':
         # Previous complete month
@@ -296,99 +290,9 @@ async def run_scheduled_collection_all_brands():
         db.close()
 
 
-async def run_monthly_report_all_brands():
-    """
-    Generate monthly reports for ALL enabled brands.
-
-    This runs on the 1st of each month at 6:00 AM UTC.
-    Generates reports from the previous month's already-analyzed data.
-    Email notifications ARE sent when reports are ready.
-    """
-    logger.info("=" * 60)
-    logger.info("MONTHLY REPORT GENERATION: Starting for all enabled brands")
-    logger.info("=" * 60)
-
-    reference_date = datetime.utcnow()
-    await run_report_generation_all_brands('monthly', reference_date)
-
-
-async def run_quarterly_report_all_brands():
-    """
-    Generate quarterly reports for ALL enabled brands.
-
-    This runs on Apr 1, Jul 1, Oct 1, Jan 1 at 7:00 AM UTC.
-    Generates reports from the previous quarter's already-analyzed data.
-    Email notifications ARE sent when reports are ready.
-    """
-    logger.info("=" * 60)
-    logger.info("QUARTERLY REPORT GENERATION: Starting for all enabled brands")
-    logger.info("=" * 60)
-
-    reference_date = datetime.utcnow()
-    await run_report_generation_all_brands('quarterly', reference_date)
-
-
-async def run_annual_report_all_brands():
-    """
-    Generate annual reports for ALL enabled brands.
-
-    This runs on January 1 at 8:00 AM UTC.
-    Generates reports from the previous year's already-analyzed data.
-    Email notifications ARE sent when reports are ready.
-    """
-    logger.info("=" * 60)
-    logger.info("ANNUAL REPORT GENERATION: Starting for all enabled brands")
-    logger.info("=" * 60)
-
-    reference_date = datetime.utcnow()
-    await run_report_generation_all_brands('annual', reference_date)
-
-
-async def run_report_generation_all_brands(period_type: str, reference_date: datetime):
-    """
-    Generate reports for all enabled brands (report-only, no analysis).
-
-    This uses already-analyzed response data to generate periodic reports.
-    Analysis is done separately during weekly collection runs.
-
-    Args:
-        period_type: 'monthly', 'quarterly', or 'annual'
-        reference_date: Reference date for calculating the period
-    """
-    db = SessionLocal()
-
-    try:
-        # Get all enabled scheduled tasks
-        enabled_tasks = db.query(ScheduledTask).filter(
-            ScheduledTask.is_enabled == True
-        ).all()
-
-        logger.info(f"Found {len(enabled_tasks)} enabled brands for {period_type} report generation")
-
-        # Calculate period dates once (same for all brands)
-        start_date, end_date, period_label = get_period_date_range(period_type, reference_date)
-        logger.info(f"Report period: {period_label} ({start_date} to {end_date})")
-
-        for task in enabled_tasks:
-            try:
-                logger.info(f"Generating {period_type} report for brand {task.brand_id}")
-                await execute_report_generation(task.id, period_type, reference_date)
-            except Exception as e:
-                logger.error(f"Failed {period_type} report for brand {task.brand_id}: {e}")
-                continue
-
-        logger.info(f"Completed {period_type} report generation for all brands")
-
-    except Exception as e:
-        logger.error(f"Error in {period_type} report generation: {str(e)}", exc_info=True)
-
-    finally:
-        db.close()
-
-
 async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int):
     """
-    Execute data collection ONLY (no analysis or report).
+    Execute data collection ONLY (no analysis).
 
     Used by weekly scheduled collection.
     Does NOT send email notifications.
@@ -475,10 +379,10 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
 
 async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_id: int):
     """
-    Execute data collection followed by analysis (no report, no email).
+    Execute data collection followed by analysis (no email).
 
     Used by weekly scheduled collection.
-    Does NOT send email notifications - those only go out with reports.
+    Does NOT send email notifications.
 
     Steps:
     1. Run collection to gather responses from LLM platforms
@@ -596,7 +500,7 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
 
 async def execute_scheduled_collection(schedule_id: int):
     """
-    Execute a full data collection pipeline (collection + analysis + report).
+    Execute a full data collection pipeline (collection + analysis).
 
     LEGACY FUNCTION: In the new scheduling system (Jan 2026), weekly scheduled
     collections use execute_collection_only() instead. This function is kept for:
@@ -654,9 +558,9 @@ async def execute_scheduled_collection(schedule_id: int):
         db.refresh(history)
 
         # Run collection + individual response analysis using the data pipeline
-        from app.services.data_pipeline import run_collection_analysis_report
+        from app.services.data_pipeline import run_collection_and_analysis
 
-        result = run_collection_analysis_report(
+        result = run_collection_and_analysis(
             user_id=schedule.user_id,
             brand_id=schedule.brand_id,
             triggered_by="scheduled"
@@ -733,112 +637,6 @@ async def execute_scheduled_collection(schedule_id: int):
         _running_schedules.discard(schedule_id)
 
 
-async def execute_report_generation(schedule_id: int, period_type: str, reference_date: datetime):
-    """
-    Generate a report for a specific period (report-only, no analysis).
-
-    This is called by monthly/quarterly/annual report jobs.
-    Uses already-analyzed response data to generate the report.
-    Email notifications ARE sent when reports are ready.
-
-    Args:
-        schedule_id: The scheduled task ID
-        period_type: 'monthly', 'quarterly', or 'annual'
-        reference_date: The reference date for calculating the period
-    """
-    db = SessionLocal()
-
-    try:
-        schedule = db.query(ScheduledTask).filter_by(id=schedule_id).first()
-        if not schedule:
-            logger.warning(f"Schedule {schedule_id} not found for {period_type} report")
-            return
-
-        # Get the period date range
-        start_date, end_date, period_label = get_period_date_range(period_type, reference_date)
-
-        logger.info(f"Generating {period_type} report for schedule {schedule_id}: {period_label} ({start_date} to {end_date})")
-
-        # Run report generation (report-only, uses existing analyzed data)
-        from app.services.data_pipeline import run_period_report_only
-
-        result = await run_period_report_only(
-            user_id=schedule.user_id,
-            brand_id=schedule.brand_id,
-            period_type=period_type,
-            period_start=start_date,
-            period_end=end_date,
-            period_label=period_label,
-            triggered_by="scheduled"
-        )
-
-        if result.get("success"):
-            # Update the appropriate last report timestamp
-            if period_type == 'monthly':
-                schedule.last_monthly_analysis_at = datetime.utcnow()
-            elif period_type == 'quarterly':
-                schedule.last_quarterly_analysis_at = datetime.utcnow()
-            elif period_type == 'annual':
-                schedule.last_annual_analysis_at = datetime.utcnow()
-            db.commit()
-
-            logger.info(f"Completed {period_type} report for schedule {schedule_id}: {period_label}")
-
-            # Send email notification when reports are ready
-            # (This is the ONLY time users receive emails)
-            if schedule.send_email_notification:
-                await send_report_email(schedule, period_type, period_label, db)
-        else:
-            logger.error(f"Failed {period_type} report for schedule {schedule_id}: {result.get('error')}")
-
-            # Send failure notification if enabled
-            if schedule.send_email_notification:
-                await send_report_failure_email(schedule, period_type, period_label, result.get('error', 'Unknown error'), db)
-
-    except Exception as e:
-        logger.error(f"Error generating {period_type} report for schedule {schedule_id}: {str(e)}", exc_info=True)
-
-    finally:
-        db.close()
-
-
-async def send_report_failure_email(schedule: ScheduledTask, period_type: str, period_label: str, error_message: str, db: Session):
-    """Send email notification about failed report generation"""
-    try:
-        user = db.query(User).filter_by(id=schedule.user_id).first()
-        brand = db.query(BrandInfo).filter_by(id=schedule.brand_id).first()
-
-        if not user or not brand:
-            logger.warning(f"Could not find user or brand for report failure notification")
-            return
-
-        email_to = schedule.notification_email or user.email
-
-        period_type_display = period_type.capitalize()
-        subject = f"TALES Alert: {period_type_display} Report Issue - {brand.brand_name}"
-        body = f"""Your {period_type} report encountered an issue.
-
-Brand: {brand.brand_name}
-Report Period: {period_label}
-Error: {error_message}
-
-The system will automatically retry during the next scheduled run.
-You can also manually generate a report from the Reports page.
-
-View your dashboard: {get_site_url(db).rstrip('/')}/analytics
-
---
-TALES - AI Reputation Intelligence & Optimization
-"""
-
-        await send_email(email_to, subject, body)
-        logger.info(f"{period_type_display} report failure notification sent to {email_to}")
-
-    except Exception as e:
-        logger.error(f"Failed to send {period_type} report failure notification: {str(e)}")
-
-
-# Legacy function for backward compatibility
 async def execute_scheduled_task(schedule_id: int):
     """
     Legacy function - redirects to execute_scheduled_collection.
@@ -849,7 +647,7 @@ async def execute_scheduled_task(schedule_id: int):
 
 async def wait_for_pipeline_completion(task_id: int, db: Session, timeout: int = 7200):
     """
-    Wait for the data pipeline task to complete (collection + analysis + report).
+    Wait for the data pipeline task to complete (collection + analysis).
 
     Args:
         task_id: The TaskStatus ID to monitor
@@ -953,41 +751,6 @@ TALES - AI Reputation Intelligence & Optimization
         logger.error(f"Failed to send collection notification email: {str(e)}")
 
 
-async def send_report_email(schedule: ScheduledTask, period_type: str, period_label: str, db: Session):
-    """Send email notification about completed report generation"""
-    try:
-        user = db.query(User).filter_by(id=schedule.user_id).first()
-        brand = db.query(BrandInfo).filter_by(id=schedule.brand_id).first()
-
-        if not user or not brand:
-            logger.warning(f"Could not find user or brand for report notification")
-            return
-
-        email_to = schedule.notification_email or user.email
-
-        period_type_display = period_type.capitalize()
-        subject = f"TALES {period_type_display} Report Ready - {brand.brand_name}"
-        body = f"""Your {period_type} report is ready!
-
-Brand: {brand.brand_name}
-Report Period: {period_label}
-Report Type: {period_type_display} Report
-
-View your report: {get_site_url(db).rstrip('/')}/reports
-
-This report contains comprehensive analysis of all data collected during {period_label}.
-
---
-TALES - AI Reputation Intelligence & Optimization
-"""
-
-        await send_email(email_to, subject, body)
-        logger.info(f"{period_type_display} report notification email sent to {email_to}")
-
-    except Exception as e:
-        logger.error(f"Failed to send {period_type} report notification email: {str(e)}")
-
-
 def check_and_schedule_tasks():
     """
     DEPRECATED (Jan 2026): This function is no longer used by the scheduler.
@@ -1059,10 +822,8 @@ def start_scheduler():
     Only runs if ENABLE_SCHEDULER=true.
 
     Schedule:
-    - Weekly collection + analysis: Every Monday at 6:30 AM UTC
-    - Monthly report: 1st of each month at 6:00 AM UTC
-    - Quarterly report: Apr 1, Jul 1, Oct 1, Jan 1 at 7:00 AM UTC
-    - Annual report: January 1 at 8:00 AM UTC
+    - Collection + analysis: 1st, 7th, 14th and 21st of each month at 6:30 AM UTC
+    - Highlights emails (optional, HIGHLIGHTS_ENABLED): 2nd of the month
     """
     # Check if scheduler should be enabled
     if not is_scheduler_enabled():
@@ -1081,48 +842,10 @@ def start_scheduler():
         )
         logger.info("Scheduled: Data collection + analysis - 1st, 7th, 14th, 21st of each month at 6:30 AM UTC")
 
-        # Monthly report: 1st of each month at 6:00 AM UTC
-        scheduler.add_job(
-            lambda: asyncio.run(run_monthly_report_all_brands()),
-            CronTrigger(day=1, hour=6, minute=0),
-            id='monthly_report',
-            replace_existing=True,
-            max_instances=1
-        )
-        logger.info("Scheduled: Monthly report - 1st of each month at 6:00 AM UTC")
-
-        # Quarterly report: Apr 1, Jul 1, Oct 1, Jan 1 at 7:00 AM UTC
-        scheduler.add_job(
-            lambda: asyncio.run(run_quarterly_report_all_brands()),
-            CronTrigger(month='1,4,7,10', day=1, hour=7, minute=0),
-            id='quarterly_report',
-            replace_existing=True,
-            max_instances=1
-        )
-        logger.info("Scheduled: Quarterly report - Apr 1, Jul 1, Oct 1, Jan 1 at 7:00 AM UTC")
-
-        # Annual report: January 1 at 8:00 AM UTC
-        scheduler.add_job(
-            lambda: asyncio.run(run_annual_report_all_brands()),
-            CronTrigger(month=1, day=1, hour=8, minute=0),
-            id='annual_report',
-            replace_existing=True,
-            max_instances=1
-        )
-        logger.info("Scheduled: Annual report - January 1 at 8:00 AM UTC")
-
-        # Optional highlights emails, gated by HIGHLIGHTS_ENABLED. Runs on the
-        # 2nd of the month so the day-1 report jobs have already finished.
+        # Optional quarterly highlights email, gated by HIGHLIGHTS_ENABLED. Runs on the
+        # 2nd of the month, after the month has fully closed out.
         # The /highlights HTTP endpoints remain available for external cron.
         if os.getenv('HIGHLIGHTS_ENABLED', 'false').lower() in ('true', '1', 'yes'):
-            def _run_monthly_highlights_job():
-                from .routers.highlights import run_monthly_highlights
-                db = SessionLocal()
-                try:
-                    asyncio.run(run_monthly_highlights(db))
-                finally:
-                    db.close()
-
             def _run_quarterly_highlights_job():
                 from .routers.highlights import run_quarterly_highlights
                 db = SessionLocal()
@@ -1132,28 +855,18 @@ def start_scheduler():
                     db.close()
 
             scheduler.add_job(
-                _run_monthly_highlights_job,
-                CronTrigger(day=2, hour=9, minute=0),
-                id='monthly_highlights_email',
-                replace_existing=True,
-                max_instances=1
-            )
-            scheduler.add_job(
                 _run_quarterly_highlights_job,
                 CronTrigger(month='1,4,7,10', day=2, hour=9, minute=0),
                 id='quarterly_highlights_email',
                 replace_existing=True,
                 max_instances=1
             )
-            logger.info("Scheduled: Highlights emails - monthly on the 2nd 9:00 AM UTC, quarterly Jan/Apr/Jul/Oct 2nd 9:00 AM UTC")
+            logger.info("Scheduled: Quarterly highlights email - Jan/Apr/Jul/Oct 2nd at 9:00 AM UTC")
 
         scheduler.start()
         logger.info("=" * 60)
         logger.info("SCHEDULER ENABLED - Fixed cron jobs active")
         logger.info("  - Data collection + analysis: 1st/7th/14th/21st of month 6:30 AM UTC")
-        logger.info("  - Monthly report: 1st of month 6:00 AM UTC")
-        logger.info("  - Quarterly report: Apr/Jul/Oct/Jan 1st 7:00 AM UTC")
-        logger.info("  - Annual report: Jan 1 8:00 AM UTC")
         logger.info("=" * 60)
 
     except Exception as e:

@@ -82,7 +82,7 @@ def _high_threat_count_for_range(
         query = query.filter(models.Response.brand_id == brand_id)
     query = query.filter(
         models.Response.timestamp >= start,
-        models.Response.timestamp <= end
+        models.Response.timestamp < end
     )
     responses = query.all()
     if not responses:
@@ -123,54 +123,66 @@ def _get_period_over_period_dashboard(
      prev_start, prev_end, prev_label) = get_period_comparison_ranges(
         db, owner_user_id, brand_id, period, period_start)
 
-    cur_cache = AnalyticsCache(
-        db, user_id=owner_user_id, brand_id=brand_id,
-        date_from=cur_start, date_to=cur_end
-    )
-    prev_cache = AnalyticsCache(
-        db, user_id=owner_user_id, brand_id=brand_id,
-        date_from=prev_start, date_to=prev_end
-    )
-    cur = cur_cache.get_dashboard_data()
-    prev = prev_cache.get_dashboard_data()
+    def metrics_for(start, end):
+        scope = metrics_query.MetricScope(
+            owner_user_id=owner_user_id, brand_id=brand_id, start=start, end=end)
+        population = metrics_query.resolve(db, scope)
+        # An empty window is not "everything is zero". A period with no
+        # collection in it used to report 0 for every metric, so comparing a
+        # live quarter against an empty one produced a spurious full-value jump
+        # rather than saying there is nothing to compare against.
+        if not population.organic_rows():
+            return None
+        return _canonical_dashboard_metrics_from_population(population)
 
-    def delta(key: str) -> int:
-        return round((cur.get(key, 0) or 0) - (prev.get(key, 0) or 0))
+    current = metrics_for(cur_start, cur_end)
+    previous = metrics_for(prev_start, prev_end)
 
-    def brand_leadership_visibility(cache: AnalyticsCache) -> float:
-        sov = cache.get_share_of_voice_data()
-        brand_row = next((row for row in sov if row.get('is_brand')), None)
-        return brand_row.get('leadership_visibility', 0) if brand_row else 0
+    if current is None:
+        payload = _empty_dashboard_payload()
+        payload.update({
+            'comparison_mode': period,
+            'period_label': cur_label,
+            'previous_period_label': prev_label,
+        })
+        return payload
 
-    change_leadership_visibility = round(
-        brand_leadership_visibility(cur_cache) - brand_leadership_visibility(prev_cache)
-    )
+    def delta(key: str):
+        """Difference of two unrounded values, rounded once.
+
+        Returns 0 when the baseline period has no data at all, rather than
+        reporting the current value as if it were the size of the change.
+        """
+        if previous is None:
+            return 0
+        before, after = previous.get(key), current.get(key)
+        if before is None or after is None:
+            return 0
+        return round(after - before, 1)
 
     # High-threat competitor delta (headline period vs baseline period)
     cur_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, cur_start, cur_end)
     prev_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, prev_start, prev_end)
     change_high_threats = cur_high_threats - prev_high_threats
 
-    return {
-        'mention_rate': cur.get('mention_rate', 0),
-        'mention_count': cur.get('mention_count', 0),
-        'total_responses': cur.get('total_responses', 0),
-        'positive_sentiment': cur.get('positive_sentiment', 0),
-        'descriptor_match': cur.get('descriptor_match', 0),
-        'share_of_voice': cur.get('share_of_voice', 0),
+    payload = dict(current)
+    payload.update({
         'change_mention_rate': delta('mention_rate'),
         'change_sentiment': delta('positive_sentiment'),
         'change_descriptor': delta('descriptor_match'),
         'change_share_of_voice': delta('share_of_voice'),
         'change_high_threats': change_high_threats,
-        'change_leadership_visibility': change_leadership_visibility,
-        'leading_position': cur.get('leading_position', 'N/A'),
+        'change_leadership_visibility': delta('leadership_visibility'),
         'comparison_mode': period,
         'period_label': cur_label,
         'previous_period_label': prev_label,
+        # True when the baseline period has no data, so the UI can say "no
+        # comparison available" instead of drawing a flat trend arrow.
+        'previous_period_has_data': previous is not None,
         'collection_date': None,
         'previous_collection_date': None,
-    }
+    })
+    return payload
 
 
 @router.get("/dashboard", response_model=Dict[str, Any])
@@ -303,7 +315,17 @@ def _canonical_dashboard_metrics(
     """Every dashboard figure for one batch, from the canonical definitions."""
     population = metrics_query.resolve(
         db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id))
+    return _canonical_dashboard_metrics_from_population(population)
 
+
+def _canonical_dashboard_metrics_from_population(population) -> Dict[str, Any]:
+    """Shape a resolved population into the dashboard payload.
+
+    Shared by batch mode and period mode so switching the comparison dropdown
+    cannot change which definition produced the number. Period mode used to run
+    on a separate AnalyticsCache path that rounded to integers and divided
+    sentiment by a different denominator.
+    """
     mention = metrics_core.mention_rate(population)
     sentiment = metrics_core.positive_sentiment_rate(population)
     descriptor = metrics_core.descriptor_match_rate(population)
@@ -525,7 +547,7 @@ def get_competitor_threats_analysis(
             db, owner_user_id, brand_id, period, parse_period_start(period_start))
         query = query.filter(
             models.Response.timestamp >= cur_start,
-            models.Response.timestamp <= cur_end
+            models.Response.timestamp < cur_end
         )
     elif batch_id:
         query = query.filter(models.Response.batch_id == batch_id)

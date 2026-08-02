@@ -8,7 +8,7 @@ import Competitors from '../pages/manage/Competitors';
 import Descriptors from '../pages/manage/Descriptors';
 import BrandInfo from '../pages/manage/BrandInfo';
 import ManageBrands from '../pages/manage/ManageBrands';
-import ReportsPage from '../pages/ReportsPage';
+import ExportsPage from '../pages/ExportsPage';
 import CollectAndAnalyze from '../pages/CollectAndAnalyze';
 import Settings from '../pages/Settings';
 import UserManagement from '../pages/admin/UserManagement';
@@ -232,11 +232,11 @@ const AppRoutes: React.FC = () => {
 
         {/* Reports Route */}
         <Route
-          path="/reports"
+          path="/exports"
           element={
             <ProtectedRoute>
               <Layout>
-                <ReportsPage />
+                <ExportsPage />
               </Layout>
             </ProtectedRoute>
           }

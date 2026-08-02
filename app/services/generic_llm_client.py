@@ -622,7 +622,7 @@ class GenericLLMClient:
     def _distill_search_query(prompt: str, analysis_provider, max_words: int = 10) -> str:
         """Reduce a long report-writing prompt to a concise search-engine query.
 
-        Report prompts in scripts/admin/generate_report.py are paragraph-length
+        Highlights prompts in app/routers/highlights.py are paragraph-length
         instructions ("Research the latest trends...") — passing them verbatim
         to Bing as q= would return noise because search engines rank by keyword
         density. We ask the analysis LLM to extract the actual searchable intent

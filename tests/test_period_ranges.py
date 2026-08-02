@@ -58,21 +58,21 @@ class TestMonthComparisonRanges:
         # On any day in July 2026: June vs May.
         cs, ce, cl, ps, pe, pl = get_period_comparison_ranges(
             None, 1, None, 'month', now=datetime(2026, 7, 6))
-        assert cs == datetime(2026, 6, 1)
-        assert ce == datetime(2026, 6, 30, 23, 59, 59)
+        assert cs == datetime(2026, 6, 1, 4, 0)
+        assert ce == datetime(2026, 7, 1, 4, 0)
         assert cl == "June 2026"
-        assert ps == datetime(2026, 5, 1)
-        assert pe == datetime(2026, 5, 31, 23, 59, 59)
+        assert ps == datetime(2026, 5, 1, 4, 0)
+        assert pe == datetime(2026, 6, 1, 4, 0)
         assert pl == "May 2026"
 
     def test_january_year_rollover(self):
         # In January 2026: December 2025 vs November 2025.
         cs, ce, cl, ps, pe, pl = get_period_comparison_ranges(
             None, 1, None, 'month', now=datetime(2026, 1, 6))
-        assert cs == datetime(2025, 12, 1)
-        assert ce == datetime(2025, 12, 31, 23, 59, 59)
+        assert cs == datetime(2025, 12, 1, 5, 0)
+        assert ce == datetime(2026, 1, 1, 5, 0)
         assert cl == "December 2025"
-        assert ps == datetime(2025, 11, 1)
+        assert ps == datetime(2025, 11, 1, 4, 0)
         assert pl == "November 2025"
 
     def test_february_rollover(self):
@@ -81,7 +81,7 @@ class TestMonthComparisonRanges:
             None, 1, None, 'month', now=datetime(2026, 2, 15))
         assert cl == "January 2026"
         assert pl == "December 2025"
-        assert pe == datetime(2025, 12, 31, 23, 59, 59)
+        assert pe == datetime(2026, 1, 1, 5, 0)
 
     def test_pinned_period_start(self):
         # Pinning March 2026 gives March vs February regardless of "now".
@@ -89,9 +89,9 @@ class TestMonthComparisonRanges:
             None, 1, None, 'month',
             period_start=datetime(2026, 3, 1), now=datetime(2026, 7, 6))
         assert cl == "March 2026"
-        assert ce == datetime(2026, 3, 31, 23, 59, 59)
+        assert ce == datetime(2026, 4, 1, 4, 0)
         assert pl == "February 2026"
-        assert pe == datetime(2026, 2, 28, 23, 59, 59)
+        assert pe == datetime(2026, 3, 1, 5, 0)
 
 
 class TestQuarterComparisonRanges:
@@ -99,21 +99,21 @@ class TestQuarterComparisonRanges:
         # During Q3 2026: Q2 vs Q1.
         cs, ce, cl, ps, pe, pl = get_period_comparison_ranges(
             None, 1, None, 'quarter', now=datetime(2026, 7, 6))
-        assert cs == datetime(2026, 4, 1)
-        assert ce == datetime(2026, 6, 30, 23, 59, 59)
+        assert cs == datetime(2026, 4, 1, 4, 0)
+        assert ce == datetime(2026, 7, 1, 4, 0)
         assert cl == "Q2 2026"
-        assert ps == datetime(2026, 1, 1)
-        assert pe == datetime(2026, 3, 31, 23, 59, 59)
+        assert ps == datetime(2026, 1, 1, 5, 0)
+        assert pe == datetime(2026, 4, 1, 4, 0)
         assert pl == "Q1 2026"
 
     def test_january_year_rollover(self):
         # In January 2026 (Q1 in progress): Q4 2025 vs Q3 2025.
         cs, ce, cl, ps, pe, pl = get_period_comparison_ranges(
             None, 1, None, 'quarter', now=datetime(2026, 1, 6))
-        assert cs == datetime(2025, 10, 1)
-        assert ce == datetime(2025, 12, 31, 23, 59, 59)
+        assert cs == datetime(2025, 10, 1, 4, 0)
+        assert ce == datetime(2026, 1, 1, 5, 0)
         assert cl == "Q4 2025"
-        assert ps == datetime(2025, 7, 1)
+        assert ps == datetime(2025, 7, 1, 4, 0)
         assert pl == "Q3 2025"
 
     def test_pinned_period_start(self):
@@ -123,5 +123,5 @@ class TestQuarterComparisonRanges:
             period_start=datetime(2026, 1, 1), now=datetime(2026, 7, 6))
         assert cl == "Q1 2026"
         assert pl == "Q4 2025"
-        assert ps == datetime(2025, 10, 1)
-        assert pe == datetime(2025, 12, 31, 23, 59, 59)
+        assert ps == datetime(2025, 10, 1, 4, 0)
+        assert pe == datetime(2026, 1, 1, 5, 0)

@@ -97,9 +97,10 @@ class TestMetricsCorePurity:
 #: The list may shrink. It may never grow.
 #:
 #: Started at 23 entries. Ten came off when the dashboard, the per-LLM endpoints,
-#: BatchAnalytics, the report generator, the exports and the highlights email
-#: were migrated. What remains is the legacy modules scheduled for deletion, the
-#: surfaces still to migrate, and tooling that reports on the old code by design.
+#: BatchAnalytics, the exports and the highlights email were migrated, and more
+#: went with the reports feature itself. What remains is the legacy modules
+#: scheduled for deletion, the surfaces still to migrate, and tooling that
+#: reports on the old code by design.
 INLINE_MATH_ALLOWLIST = {
     # Legacy metric modules. Superseded by metrics_core; kept importable so
     # metric_baseline.py can show the contrast. Scheduled for deletion.
@@ -110,7 +111,6 @@ INLINE_MATH_ALLOWLIST = {
     "app/routers/highlights.py",     # per-query rates only; the metrics are migrated
     "app/services/analytics_cache.py",  # trends and threats remain
     "app/services/cached_metrics.py",   # reads BatchAnalytics columns directly
-    "scripts/admin/generate_report.py",  # narrative sections beyond period metrics
     "scripts/admin/analyze_responses.py",
     "scripts/admin/collect_responses.py",
     # Reports on the legacy implementations by design.

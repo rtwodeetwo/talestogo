@@ -20,7 +20,6 @@ import { useBrand } from '../contexts/BrandContext';
 import BrandedLoader from '../components/BrandedLoader';
 import { useTaskStatus } from '../contexts/TaskStatusContext';
 import BatchSelector, { type CollectionBatch } from '../components/BatchSelector';
-import { captureAndUploadCharts } from '../utils/chartCapture';
 import ChartContainer from '../components/ChartContainer';
 import { useResponsiveValue } from '../utils/responsive';
 import { formatDateEST } from '../utils/dateUtils';
@@ -62,6 +61,9 @@ interface DashboardMetrics {
   collection_date?: string;
   previous_collection_date?: string;
   comparison_mode?: string;
+  // False when the baseline period contains no data at all, so there is
+  // nothing to compare against and no trend arrow should be drawn.
+  previous_period_has_data?: boolean;
   period_label?: string;
   previous_period_label?: string;
 }
@@ -354,27 +356,6 @@ export default function Dashboard() {
         queryClient.invalidateQueries({ queryKey: ['dashboard-metrics'] });
         queryClient.invalidateQueries({ queryKey: ['responses'] });
 
-        // Automatically capture and upload charts for report generation
-        try {
-          console.log('📸 Auto-capturing charts after analysis...');
-          const result = await captureAndUploadCharts(
-            {
-              dashboard: 'dashboard-main',
-              sentiment: 'dashboard-sentiment-chart',
-              positioning: 'dashboard-positioning-chart',
-            },
-            api
-          );
-
-          if (result.success) {
-            console.log('✅ Charts captured and uploaded for reports');
-          } else {
-            console.warn('⚠️ Chart capture incomplete:', result.message);
-          }
-        } catch (error) {
-          console.error('❌ Error auto-capturing charts:', error);
-          // Don't show error to user - this is a background process
-        }
       }, 3000); // Wait 3 seconds for charts to fully render
     },
     onError: (error: any) => {
@@ -444,12 +425,23 @@ export default function Dashboard() {
   // In a period-over-period mode (month or quarter), compare against the named
   // previous period (e.g. "vs May 2026" / "vs Q1 2026"); otherwise use "vs last period".
   const isPeriodMode = comparisonMode !== 'batch';
+  // A period with no collection in it is not a period where every metric was
+  // zero. Comparing against one used to render the current value as if it were
+  // the size of the change.
+  const hasComparison = !isPeriodMode || metrics.previous_period_has_data !== false;
   const periodSuffix = isPeriodMode && metrics.previous_period_label
     ? ` vs ${metrics.previous_period_label}`
     : ' vs last period';
 
   // Format change indicators
   const formatChange = (value: number, previousDate?: string) => {
+    if (!hasComparison) {
+      return (
+        <Typography variant="body2" color="text.secondary">
+          No data for {metrics.previous_period_label ?? 'the previous period'}
+        </Typography>
+      );
+    }
     if (value === 0) return null;
     const sign = value > 0 ? '↑' : '↓';
     const color = value > 0 ? 'success.main' : 'error.main';

@@ -135,7 +135,7 @@ export default function Layout({ children }: LayoutProps) {
     { text: 'Descriptors', icon: <DescriptorIcon />, path: '/analytics/descriptors', indent: true },
     { text: 'Sentiment', icon: <SentimentIcon />, path: '/analytics/sentiment', indent: true },
     { text: 'Threats', icon: <WarningIcon />, path: '/analytics/threats', indent: true },
-    { text: 'Reports', icon: <ReportIcon />, path: '/reports', indent: false },
+    { text: 'Data Exports', icon: <ReportIcon />, path: '/exports', indent: false },
     { text: 'How Tales Works', icon: <InfoIcon />, path: '/how-tales-works', indent: false },
   ];
 

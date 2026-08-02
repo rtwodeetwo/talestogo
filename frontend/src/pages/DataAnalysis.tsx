@@ -36,17 +36,6 @@ import { api } from '../services/api';
 import ReactMarkdown from 'react-markdown';
 import TaskProgressIndicator from '../components/TaskProgressIndicator';
 
-interface Report {
-  id: number;
-  title: string;
-  created_at: string;
-  updated_at: string;
-  report_content: string;
-  total_responses: number;
-  mention_rate?: number;
-  google_doc_url?: string;
-}
-
 export default function DataAnalysis() {
   const queryClient = useQueryClient();
   const [showProgress, setShowProgress] = useState(false);
@@ -56,19 +45,10 @@ export default function DataAnalysis() {
     severity: 'info',
   });
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
-  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [analysisMode, setAnalysisMode] = useState<'latest' | 'date-range'>('latest');
 
-  // Fetch reports
-  const { data: reports, isLoading } = useQuery<Report[]>({
-    queryKey: ['reports'],
-    queryFn: async () => {
-      const response = await api.get('/reports/');
-      return response.data;
-    },
-  });
 
   // Analysis mutation (for latest data only)
   const analysisMutation = useMutation({
@@ -126,42 +106,7 @@ export default function DataAnalysis() {
     setSnackbar({ ...snackbar, open: false });
   };
 
-  const handleViewInBrowser = (report: Report) => {
-    setSelectedReport(report);
-    setViewDialogOpen(true);
-  };
 
-  const handleDownloadWord = async (report: Report) => {
-    try {
-      const response = await api.get(`/reports/${report.id}/export/word`, {
-        responseType: 'blob',
-      });
-
-      const blob = new Blob([response.data], {
-        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${report.title}.docx`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setSnackbar({
-        open: true,
-        message: 'Word document with charts downloaded successfully',
-        severity: 'success',
-      });
-    } catch (error) {
-      setSnackbar({
-        open: true,
-        message: 'Failed to download Word document',
-        severity: 'error',
-      });
-    }
-  };
 
   return (
     <Box>
@@ -174,7 +119,7 @@ export default function DataAnalysis() {
       {/* Run Analysis Section */}
       <Paper sx={{ p: 3, mb: 4, backgroundColor: '#f5f5f5' }}>
         <Typography variant="body1" color="text.secondary" sx={{ mb: 3, fontWeight: 600 }}>
-          Analyze collected responses and generate a comprehensive report with AI-powered insights.
+          Analyze collected responses to extract mentions, sentiment, positioning, competitors and descriptors.
         </Typography>
 
         <FormControl component="fieldset" fullWidth>
@@ -284,7 +229,7 @@ export default function DataAnalysis() {
           >
             {analysisMutation.isPending || rerunAnalysisMutation.isPending
               ? 'Running Analysis...'
-              : 'Run Analysis & Generate Report'}
+              : 'Run Analysis'}
           </Button>
         </Box>
       </Paper>
@@ -294,7 +239,6 @@ export default function DataAnalysis() {
         <TaskProgressIndicator
           onComplete={() => {
             setShowProgress(false);
-            queryClient.invalidateQueries({ queryKey: ['reports'] });
             queryClient.invalidateQueries({ queryKey: ['dashboard-metrics'] });
             queryClient.invalidateQueries({ queryKey: ['responses'] });
             queryClient.invalidateQueries({ queryKey: ['responses-dashboard'] });
@@ -308,135 +252,6 @@ export default function DataAnalysis() {
         />
       )}
 
-      {/* Report Archive */}
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h5" gutterBottom>
-          Report Archive
-        </Typography>
-
-        {isLoading ? (
-          <Box display="flex" justifyContent="center" alignItems="center" minHeight="200px">
-            <CircularProgress />
-          </Box>
-        ) : reports && reports.length > 0 ? (
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell><strong>Report</strong></TableCell>
-                  <TableCell align="right"><strong>Actions</strong></TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {reports.map((report) => (
-                  <TableRow key={report.id} hover>
-                    <TableCell>{report.title}</TableCell>
-                    <TableCell align="right">
-                      <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={<ViewIcon />}
-                          onClick={() => handleViewInBrowser(report)}
-                        >
-                          View
-                        </Button>
-                        <Button
-                          variant="contained"
-                          size="small"
-                          startIcon={<DownloadIcon />}
-                          onClick={() => handleDownloadWord(report)}
-                          sx={{ bgcolor: '#003e60', '&:hover': { bgcolor: '#80a1d4' } }}
-                        >
-                          Word
-                        </Button>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        ) : (
-          <Box sx={{ py: 4, textAlign: 'center' }}>
-            <Typography variant="body1" color="text.secondary">
-              No reports generated yet. Click "Run Analysis" to create your first report.
-            </Typography>
-          </Box>
-        )}
-      </Paper>
-
-      {/* View Report Dialog */}
-      <Dialog
-        open={viewDialogOpen}
-        onClose={() => setViewDialogOpen(false)}
-        maxWidth="lg"
-        fullWidth
-        PaperProps={{
-          sx: { height: '90vh' }
-        }}
-      >
-        <DialogTitle>
-          <Box display="flex" justifyContent="space-between" alignItems="center">
-            <Typography variant="h6">{selectedReport?.title}</Typography>
-            <IconButton onClick={() => setViewDialogOpen(false)} size="small">
-              <CloseIcon />
-            </IconButton>
-          </Box>
-        </DialogTitle>
-        <DialogContent dividers>
-          <Box sx={{
-            '& h1': { fontSize: '2rem', fontWeight: 'bold', mb: 2, mt: 3 },
-            '& h2': { fontSize: '1.5rem', fontWeight: 'bold', mb: 2, mt: 2 },
-            '& h3': { fontSize: '1.25rem', fontWeight: 'bold', mb: 1.5, mt: 1.5 },
-            '& p': { mb: 2 },
-            '& ul, & ol': { mb: 2, pl: 3 },
-            '& table': {
-              width: '100%',
-              borderCollapse: 'collapse',
-              mb: 2,
-              '& th, & td': {
-                border: '1px solid #ddd',
-                padding: '8px',
-                textAlign: 'left'
-              },
-              '& th': {
-                backgroundColor: '#f5f5f5',
-                fontWeight: 'bold'
-              }
-            },
-            '& code': {
-              backgroundColor: '#f5f5f5',
-              padding: '2px 6px',
-              borderRadius: '4px',
-              fontFamily: 'monospace'
-            },
-            '& pre': {
-              backgroundColor: '#f5f5f5',
-              padding: '12px',
-              borderRadius: '4px',
-              overflow: 'auto',
-              mb: 2
-            }
-          }}>
-            {selectedReport && (
-              <ReactMarkdown>{selectedReport.report_content}</ReactMarkdown>
-            )}
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => handleDownloadWord(selectedReport!)}
-            variant="contained"
-            sx={{ bgcolor: '#003e60', color: 'white', '&:hover': { bgcolor: '#80a1d4' } }}
-          >
-            Word
-          </Button>
-          <Button onClick={() => setViewDialogOpen(false)} variant="contained">
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       {/* Snackbar for notifications */}
       <Snackbar

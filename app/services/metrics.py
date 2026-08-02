@@ -59,7 +59,6 @@ def normalize_organization_name(name: str) -> str:
     IMPORTANT: This is imported by:
     - app.analytics
     - app.services.batch_analytics
-    - scripts.admin.generate_report
     - frontend (via API responses)
 
     When adding new normalization rules, add them to this function ONLY.
