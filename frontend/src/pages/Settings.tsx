@@ -22,6 +22,12 @@ const Settings: React.FC = () => {
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [organization, setOrganization] = useState(user?.organization || '');
 
+  // Password state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
+
   // UI state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -45,6 +51,37 @@ const Settings: React.FC = () => {
       setError(err.response?.data?.detail || 'Failed to update profile');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    setError('');
+    setSuccess('');
+
+    if (newPassword.length < 8) {
+      setError('New password must be at least 8 characters long');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('New passwords do not match');
+      return;
+    }
+
+    setPwLoading(true);
+    try {
+      await authAPI.changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setSuccess('Password changed successfully!');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      console.error('Change password error:', err);
+      setError(err.response?.data?.detail || 'Failed to change password');
+    } finally {
+      setPwLoading(false);
     }
   };
 
@@ -137,6 +174,62 @@ const Settings: React.FC = () => {
           </Grid>
         </Grid>
       </Paper>
+
+      {/* Password Section - hidden for OAuth-only accounts (no local password) */}
+      {!user?.oauth_provider && (
+        <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
+          <Typography variant="h6" gutterBottom>
+            Change Password
+          </Typography>
+          <Divider sx={{ mb: 3 }} />
+
+          <Grid container spacing={2}>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                type="password"
+                label="Current Password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                type="password"
+                label="New Password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                helperText="At least 8 characters"
+              />
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <TextField
+                fullWidth
+                type="password"
+                label="Confirm New Password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </Grid>
+
+            <Grid item xs={12}>
+              <Button
+                variant="contained"
+                onClick={handleChangePassword}
+                disabled={pwLoading || !currentPassword || !newPassword || !confirmPassword}
+              >
+                {pwLoading ? <CircularProgress size={24} /> : 'Change Password'}
+              </Button>
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
 
       {/* Admin Tools Section - Only visible to admins */}
       {user?.is_admin && (
