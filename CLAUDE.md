@@ -15,19 +15,63 @@ The private dev repo is `tales_project` (local path `/Users/rkremen/Documents/Co
 
 If a change is needed in both repos, treat them as two separate, independent commits in two separate working trees.
 
-## 📍 Canonical Source: GitHub
+## 📍 Two Destinations: ALWAYS ASK WHICH ONE
 
-The single source of truth for TalesToGo is **`github.com/rtwodeetwo/talestogo`**. This is the version shared with PNNL and other U.S. National Labs for self-deployment.
+TalesToGo has **two** legitimate remotes, and they do different jobs. Which one a
+given piece of work belongs on is Rachel's call, not something to infer.
 
-- **All new work lands here.** Commits, branches, PRs, and merges happen on `rtwodeetwo/talestogo`.
-- **`origin` remote = GitHub** in this working tree. Pushes default to GitHub.
+| Remote | Where | Role |
+|---|---|---|
+| `origin` | `github.com/rtwodeetwo/talestogo` | Canonical source. Development, PRs, releases, the version shared with PNNL and other U.S. National Labs. |
+| `pppl` | `git.pppl.gov/rkremen/talestogo` | **One possible deployment line.** PPPL's own instance builds from here. |
 
-### Other places `talestogo` exists — do NOT confuse for canonical
+### ⚠️ Ask every time, before every push
 
-- **`git.pppl.gov/rkremen/talestogo`** — an older PPPL GitLab sister repo that predates the May 2026 strip-to-Tales-only cleanup. It still has the pre-strip codebase (the 8 removed products, `deployment-kit-pppl/`, ~200 stripped files). It is **NOT** the canonical source and is **NOT** kept in sync. Do not push new work there assuming it's a mirror — its `main` is on a different history line from GitHub's `main` and force-pushing would destroy work that may still be referenced by something. If a future operation needs to update it, treat it as a separate codebase that needs a thought-out migration, not a quick `git push`.
-- **`tales_project`** — see the Critical Rule above. Private dev repo, never touched from this working tree.
+**Before pushing, committing to a shared branch, opening a PR or MR, or tagging,
+ask Rachel explicitly: GitHub or GitLab?** Confirm it each time, even if the
+answer was obvious last time.
 
-If you find yourself about to push TalesToGo work to anywhere other than `origin` / `rtwodeetwo/talestogo`, stop and confirm with Rachel first.
+Do NOT infer the destination from:
+
+- where the previous push in this session went,
+- the branch name or what the branch contains,
+- which remote happens to be configured, or which one `git push` would default to,
+- the fact that Rachel just approved a push to the other one.
+
+Approval for one destination is never approval for the other. If she has not said
+which in this exchange, ask before doing anything that writes to a remote.
+
+### Why the distinction has teeth
+
+Pushing to GitLab's **default branch is a live deployment**. `.gitlab-ci.yml`
+builds an image with Kaniko and then fires a Portainer webhook, which redeploys
+`tales.pppl.gov`. Pushing to any **other** branch on GitLab only builds an image
+tagged with the branch slug; the deploy job is not even created, so it is safe.
+
+GitHub has no such side effect. A push there changes what labs will clone, but
+nothing restarts.
+
+So the two are not interchangeable even when the code is identical, and "push
+this" is ambiguous until she says where.
+
+### Current state of the GitLab repo (as of 2026-08-02)
+
+- `main` is at `aa54b1b8`, 26 February 2026, and predates the strip-to-Tales-only
+  cleanup. It still carries the 8 removed products.
+- `audit/metrics-reconciliation` (all of 2.0) was pushed there and built cleanly;
+  the image is in the registry as `rkremen/talestogo:audit-metrics-reconciliation`.
+- The histories ARE related, common ancestor `021952da`, contrary to an earlier
+  note in this file that said otherwise.
+- Local tag `archive/pppl-main-2026-02-26` anchors the old GitLab `main` in case
+  it is ever overwritten. It is deliberately not pushed, because a tag push would
+  trigger a CI build of the February codebase.
+
+### The third place, which is never a destination
+
+**`tales_project`**: see the Critical Rule at the top of this file. Private dev
+repo, never read from or written to from this working tree. Its production
+*database* may legitimately be read for a data migration (that is a database, not
+the codebase), but the repo itself is off limits.
 
 ## Session Log: 2026-05-08 — Strip-to-Tales-Only Cleanup
 
@@ -313,12 +357,22 @@ parameter), pip-audit 0 unaccepted, npm audit 0 unaccepted.
 
 ### NEXT SESSION
 
-1. **Merge plan for 2.0.** `release/2.0` was already merged to `main` via PR #23,
-   and `release/2.0` is a direct ancestor of this branch, so this is a clean
-   fast-forward with no force-push. Suggested: fast-forward `release/2.0` onto
-   this work, PR to `main`, then tag `v2.0.0` (the only tag today is `v1.0.0`).
-   Do **not** force-push over the existing 2.0 commits; they are public and may
-   have been cloned.
+1. **Merge plan for 2.0 on GitHub.** `release/2.0` was already merged to `main`
+   via PR #23, and `release/2.0` is a direct ancestor of this branch, so this is
+   a clean fast-forward with no force-push. Suggested: fast-forward `release/2.0`
+   onto this work, PR to `main`, then tag `v2.0.0` (the only tag today is
+   `v1.0.0`). Note `main` has since also taken the change-password commit via
+   PR #24, so the fast-forward must account for it. Do **not** force-push over
+   the existing 2.0 commits; they are public and may have been cloned.
+   **Confirm with Rachel that GitHub is the intended destination before pushing;
+   see "Two Destinations" at the top of this file.**
+1b. **The GitLab side is already part-done.** `audit/metrics-reconciliation` was
+   pushed to `pppl` on 2026-08-02 and built cleanly (pipeline 303085, image
+   `rkremen/talestogo:audit-metrics-reconciliation`). The live site was NOT
+   touched, because the deploy job only runs on the default branch. The cutover
+   still to do: back up the PPPL Postgres, point the Portainer stack at that
+   branch image tag to test 2.0 on real infrastructure, and only then decide
+   about GitLab `main`.
 2. **Investigations follow-ups, both deliberately deferred:** per-brand
    thresholds (today they are deployment-wide, and `threshold_for` is the single
    place a per-brand setting would land), and batch-mode auto-triggers (only
