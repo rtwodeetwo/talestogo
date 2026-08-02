@@ -101,34 +101,76 @@ from app.routers import (
 # It's convenient for development. For production, you'd use a migration tool.
 models.Base.metadata.create_all(bind=engine)
 
-# Auto-add columns that were added after initial table creation.
-# create_all() won't ALTER existing tables — only creates missing ones.
+# Reconcile existing tables with the models. create_all() creates missing TABLES
+# but never ALTERs an existing one, so any column added after a deployment first
+# ran is simply absent there, and every query touching that model fails with
+# "no such column".
+#
+# This used to be a hand-maintained list of ALTER statements, and it fell behind
+# exactly as you would expect. llm_providers.api_version was added with only a
+# standalone migration script that nobody runs, so on any deployment predating it
+# the entire LLM Configuration page 500s, including the read that populates it.
+# The failure surfaces as an unexplained "Failed to save provider" in the UI,
+# which is a long way from "your database is missing a column".
+#
+# Adding a nullable column is cheap and safe on both Postgres and SQLite (no
+# table rewrite), so the drift is closed automatically. Anything NOT nullable
+# cannot be invented safely, since there is no correct value for existing rows,
+# so those are logged loudly and left alone.
 from sqlalchemy import inspect, text
+
+_migration_log = logging.getLogger("app.schema")
+
+
+def _reconcile_columns(bind) -> None:
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    added, manual = [], []
+
+    for table in models.Base.metadata.sorted_tables:
+        if table.name not in tables:
+            continue  # create_all() has just built it, fully formed
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            if not column.nullable:
+                manual.append(f"{table.name}.{column.name}")
+                continue
+            ddl_type = column.type.compile(bind.dialect)
+            with bind.begin() as connection:
+                # Identifiers come from our own model metadata, never from a
+                # request. A column name cannot be a bound parameter.
+                connection.execute(text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text,semgrep-rules.python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text
+                    f"ALTER TABLE {table.name} ADD COLUMN {column.name} {ddl_type}"))
+            added.append(f"{table.name}.{column.name}")
+
+    if added:
+        _migration_log.warning(
+            "Added %d missing nullable column(s) to bring the database up to "
+            "date with the models: %s", len(added), ", ".join(added))
+    if manual:
+        # Loud, because the app will keep failing on these until someone acts.
+        _migration_log.error(
+            "Database is missing NOT NULL column(s) that cannot be added "
+            "automatically: %s. Queries touching those tables will fail until "
+            "they are added by hand with a sensible default.", ", ".join(manual))
+
+
+_reconcile_columns(engine)
+
+# Special cases the generic pass cannot express.
 _inspector = inspect(engine)
-if "llm_providers" in _inspector.get_table_names():
-    _existing_cols = {c["name"] for c in _inspector.get_columns("llm_providers")}
-    if "bing_connection_name" not in _existing_cols:
-        with engine.begin() as _conn:
-            _conn.execute(text("ALTER TABLE llm_providers ADD COLUMN bing_connection_name VARCHAR(200)"))
 if "brand_info" in _inspector.get_table_names():
     _existing_cols = {c["name"] for c in _inspector.get_columns("brand_info")}
     if "fiscal_year_start_month" not in _existing_cols:
+        # NOT NULL, so it needs a default the generic pass will not invent.
         with engine.begin() as _conn:
             _conn.execute(text("ALTER TABLE brand_info ADD COLUMN fiscal_year_start_month INTEGER NOT NULL DEFAULT 1"))
 if "responses" in _inspector.get_table_names() and engine.dialect.name == "postgresql":
+    # A widening of an existing column rather than a missing one.
     with engine.begin() as _conn:
         _conn.execute(text("ALTER TABLE responses ALTER COLUMN platform TYPE VARCHAR(100)"))
-if "responses" in _inspector.get_table_names():
-    _existing_cols = {c["name"] for c in _inspector.get_columns("responses")}
-    if "collected_grounded" not in _existing_cols:
-        with engine.begin() as _conn:
-            # Deliberately nullable with NO default. Every existing row becomes
-            # NULL, meaning "we do not know how this was collected", which is the
-            # truth: these rows predate the column. A DEFAULT FALSE would assert
-            # that the entire history was collected ungrounded, which is the
-            # exact error this column exists to prevent.
-            _conn.execute(text(
-                "ALTER TABLE responses ADD COLUMN collected_grounded BOOLEAN"))
 del _inspector
 
 # --- Lifespan (startup / shutdown) ---
