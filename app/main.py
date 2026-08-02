@@ -118,6 +118,17 @@ if "brand_info" in _inspector.get_table_names():
 if "responses" in _inspector.get_table_names() and engine.dialect.name == "postgresql":
     with engine.begin() as _conn:
         _conn.execute(text("ALTER TABLE responses ALTER COLUMN platform TYPE VARCHAR(100)"))
+if "responses" in _inspector.get_table_names():
+    _existing_cols = {c["name"] for c in _inspector.get_columns("responses")}
+    if "collected_grounded" not in _existing_cols:
+        with engine.begin() as _conn:
+            # Deliberately nullable with NO default. Every existing row becomes
+            # NULL, meaning "we do not know how this was collected", which is the
+            # truth: these rows predate the column. A DEFAULT FALSE would assert
+            # that the entire history was collected ungrounded, which is the
+            # exact error this column exists to prevent.
+            _conn.execute(text(
+                "ALTER TABLE responses ADD COLUMN collected_grounded BOOLEAN"))
 del _inspector
 
 # --- Lifespan (startup / shutdown) ---
