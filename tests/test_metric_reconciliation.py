@@ -42,43 +42,40 @@ class TestDashboardSurface:
         assert response.status_code == 200, response.text
         return response.json()
 
-    @pytest.mark.xfail(reason="app/routers/analytics.py:254 serves BatchAnalytics, "
-                              "which counts unanalyzed rows as not-mentioned and "
-                              "rounds to int", strict=False)
     def test_mention_rate_matches_canonical(self, dashboard):
         assert dashboard["mention_rate"] == gx.B1_MENTION_RATE
 
-    @pytest.mark.xfail(reason="app/routers/analytics.py:262 divides a Yes-only "
-                              "numerator by a Yes+Indirect denominator", strict=False)
     def test_positive_sentiment_matches_canonical(self, dashboard):
         assert dashboard["positive_sentiment"] == gx.B1_POSITIVE_SENTIMENT_RATE
 
-    @pytest.mark.xfail(reason="app/services/analytics_cache.py:391 counts competitors "
-                              "only within brand-mentioned responses", strict=False)
     def test_share_of_voice_matches_canonical(self, dashboard):
         assert dashboard["share_of_voice"] == gx.B1_SHARE_OF_VOICE
 
-    @pytest.mark.xfail(reason="app/services/analytics_cache.py:283 matches "
-                              "descriptors by bidirectional substring", strict=False)
     def test_descriptor_match_matches_canonical(self, dashboard):
         assert dashboard["descriptor_match"] == gx.B1_DESCRIPTOR_MATCH_RATE
 
     def test_reports_a_total_response_count(self, dashboard):
         assert "total_responses" in dashboard
 
-    @pytest.mark.xfail(reason="no surface reports what was excluded; an unanalyzed "
-                              "row is indistinguishable from 'not mentioned'",
-                       strict=False)
     def test_reports_excluded_row_counts(self, dashboard):
-        """Until this passes, a collection failure looks like a reputation drop."""
-        assert "unanalyzed_excluded" in dashboard
+        """Without this, a collection failure looks like a reputation drop."""
+        quality = dashboard["data_quality"]
+        assert quality["counted"] == gx.B1_POPULATION
+        assert quality["unanalyzed_excluded"] == gx.B1_UNANALYZED_EXCLUDED
+        assert quality["invalid_enum_excluded"] == gx.B1_INVALID_ENUM_EXCLUDED
+        assert quality["orphan_query_excluded"] == gx.B1_ORPHAN_EXCLUDED
+        assert quality["branded_excluded"] == gx.B1_BRANDED_EXCLUDED
+
+    def test_leadership_visibility_is_reported(self, dashboard):
+        assert dashboard["leadership_visibility"] == gx.B1_LEADERSHIP_VISIBILITY
+
+    def test_positioning_average_is_on_the_five_point_scale(self, dashboard):
+        assert dashboard["positioning_average"] == gx.B1_POSITIONING_AVERAGE
 
 
 class TestDashboardInternalConsistency:
     """Fields within a single Dashboard payload that must agree with each other."""
 
-    @pytest.mark.xfail(reason="analytics.py:262 headline vs analytics_cache.py:698 "
-                              "pie use different denominators", strict=False)
     def test_positive_sentiment_equals_its_own_pie_slices(self, golden_client,
                                                           golden_db_with_stored_analytics):
         dashboard = golden_client.get(

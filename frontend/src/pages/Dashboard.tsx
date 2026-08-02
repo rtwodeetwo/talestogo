@@ -25,13 +25,32 @@ import ChartContainer from '../components/ChartContainer';
 import { useResponsiveValue } from '../utils/responsive';
 import { formatDateEST } from '../utils/dateUtils';
 
+/** What the backend excluded from the metrics, and why.
+ *
+ * Surfacing these is what lets a failed collection be told apart from a real
+ * drop in visibility. Previously an unanalyzed response was counted as "brand
+ * not mentioned", so a bad collection night looked identical to bad news.
+ */
+interface DataQuality {
+  total_rows: number;
+  counted: number;
+  branded_excluded: number;
+  unanalyzed_excluded: number;
+  invalid_enum_excluded: number;
+  orphan_query_excluded: number;
+}
+
 interface DashboardMetrics {
-  mention_rate: number;
+  // Rates are null when there is nothing to divide by. That is deliberately
+  // distinct from 0, which means "measured, and genuinely zero".
+  mention_rate: number | null;
   mention_count: number;
   total_responses: number;
-  positive_sentiment: number;
-  descriptor_match: number;
-  share_of_voice: number;
+  positive_sentiment: number | null;
+  descriptor_match: number | null;
+  share_of_voice: number | null;
+  leadership_visibility: number | null;
+  positioning_average: number | null;
   change_mention_rate: number;
   change_sentiment: number;
   change_descriptor: number;
@@ -39,12 +58,21 @@ interface DashboardMetrics {
   change_high_threats: number | null;
   change_leadership_visibility: number;
   leading_position: string;
+  data_quality?: DataQuality;
   collection_date?: string;
   previous_collection_date?: string;
   comparison_mode?: string;
   period_label?: string;
   previous_period_label?: string;
 }
+
+/** Render a rate, distinguishing "no data" from zero.
+ *
+ * The backend reports one decimal place; we show whole percentages on the
+ * tiles, but a null must never round to 0.
+ */
+const formatPct = (value: number | null | undefined): string =>
+  value === null || value === undefined ? '—' : `${Math.round(value)}%`;
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
@@ -547,7 +575,7 @@ export default function Dashboard() {
                       : (metrics.collection_date && `on ${formatDateEST(metrics.collection_date, 'short')}`)}
                   </Typography>
                   <Typography variant="h4" component="div" color="primary">
-                    {Math.round(metrics.mention_rate ?? 0)}%
+                    {formatPct(metrics.mention_rate)}
                   </Typography>
                   {formatChange(metrics.change_mention_rate, metrics.previous_collection_date)}
                 </Box>
@@ -609,7 +637,7 @@ export default function Dashboard() {
                     Target Descriptor Adoption
                   </Typography>
                   <Typography variant="h4" component="div" color="primary">
-                    {Math.round(metrics.descriptor_match ?? 0)}%
+                    {formatPct(metrics.descriptor_match)}
                   </Typography>
                   {formatChange(metrics.change_descriptor)}
                 </Box>
@@ -628,7 +656,7 @@ export default function Dashboard() {
                     Share of Voice
                   </Typography>
                   <Typography variant="h4" component="div" color="primary">
-                    {Math.round(metrics.share_of_voice ?? 0)}%
+                    {formatPct(metrics.share_of_voice)}
                   </Typography>
                   {metrics.change_share_of_voice === 0 ? (
                     <Typography variant="body2" color="textSecondary">
@@ -657,7 +685,7 @@ export default function Dashboard() {
               </Typography>
               <Box sx={{ textAlign: 'right' }}>
                 <Typography variant="body2" color="textSecondary">
-                  {Math.round(metrics.positive_sentiment ?? 0)}% Positive
+                  {formatPct(metrics.positive_sentiment)} Positive
                 </Typography>
                 {metrics.change_sentiment !== 0 && (
                   <Typography variant="caption" color={metrics.change_sentiment > 0 ? 'success.main' : 'error.main'}>
@@ -722,12 +750,12 @@ export default function Dashboard() {
               </Typography>
               <Box sx={{ textAlign: 'right' }}>
                 <Typography variant="body2" color="textSecondary">
-                  {(() => {
-                    const brandData = Array.isArray(shareOfVoice)
-                      ? shareOfVoice.find((item: any) => item.is_brand)
-                      : null;
-                    return `${Math.round(brandData?.leadership_visibility ?? 0)}% Leadership Visibility`;
-                  })()}
+                  {/* Read from the dashboard payload, not the share-of-voice
+                      response. The two used different formulas: this tile showed
+                      Leader + Top 3 + Featured while the arrow below it tracked
+                      Leader alone, so the number and its direction of travel
+                      were measuring different things. */}
+                  {`${formatPct(metrics.leadership_visibility)} Leadership Visibility`}
                 </Typography>
                 {metrics.change_leadership_visibility !== 0 && (
                   <Typography variant="caption" color={metrics.change_leadership_visibility > 0 ? 'success.main' : 'error.main'}>
