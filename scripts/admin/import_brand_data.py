@@ -74,8 +74,32 @@ def parse_datetime(dt_string):
         return None
 
 
-def import_brand_data(import_file: str, admin_email: str, dry_run: bool = False):
-    """Import brand data from JSON export file."""
+def resolve_grounded(recorded, timestamp, grounded_from):
+    """How a response being imported was collected.
+
+    Precedence is deliberate: a value recorded at collection time always wins
+    over a date-based inference, because it is a fact and the inference is a
+    guess about a whole deployment. The guess only fills in rows that have
+    nothing recorded at all.
+
+    Returns None when neither is available. None means "unknown", not
+    "ungrounded", and every consumer of this column has to keep them apart, or
+    an entire imported history would appear to have been collected one way when
+    nobody actually knows.
+    """
+    if recorded is not None:
+        return bool(recorded)
+    if grounded_from is None or timestamp is None:
+        return None
+    return timestamp >= grounded_from
+
+
+def import_brand_data(import_file: str, admin_email: str, dry_run: bool = False,
+                      grounded_from=None):
+    """Import brand data from JSON export file.
+
+    grounded_from is a datetime, or None. See resolve_grounded.
+    """
 
     # Load export file
     if not os.path.exists(import_file):
@@ -271,6 +295,9 @@ def import_brand_data(import_file: str, admin_email: str, dry_run: bool = False)
         # Import responses (the big one)
         response_count = 0
         skipped_responses = 0
+        grounded_count = 0
+        ungrounded_count = 0
+        unknown_grounding_count = 0
         for r_data in data.get('responses', []):
             # Check for duplicate (same query, platform, timestamp)
             timestamp = parse_datetime(r_data.get('timestamp'))
@@ -307,10 +334,18 @@ def import_brand_data(import_file: str, admin_email: str, dry_run: bool = False)
                 sources=r_data.get('sources'),
                 campaign_period=r_data.get('campaign_period'),
                 notes=r_data.get('notes'),
-                analyzed_at=parse_datetime(r_data.get('analyzed_at'))
+                analyzed_at=parse_datetime(r_data.get('analyzed_at')),
+                collected_grounded=resolve_grounded(
+                    r_data.get('collected_grounded'), timestamp, grounded_from),
             )
             session.add(response)
             response_count += 1
+            if response.collected_grounded is True:
+                grounded_count += 1
+            elif response.collected_grounded is False:
+                ungrounded_count += 1
+            else:
+                unknown_grounding_count += 1
 
             # Commit in batches to avoid memory issues
             if response_count % 500 == 0:
@@ -318,6 +353,19 @@ def import_brand_data(import_file: str, admin_email: str, dry_run: bool = False)
                 print(f"  ... imported {response_count} responses")
 
         print(f"Imported {response_count} responses (skipped {skipped_responses} duplicates)")
+        print(f"  Grounded: {grounded_count}, ungrounded: {ungrounded_count}, "
+              f"unknown: {unknown_grounding_count}")
+        if grounded_count and ungrounded_count:
+            # Saying this at import time, once, is much cheaper than having
+            # someone investigate the step change six weeks later and conclude
+            # the brand's visibility genuinely jumped.
+            print("  NOTE: this history spans a change in collection method. "
+                  "Trend lines are not comparable across that boundary, and a "
+                  "comparison straddling it will show a step that is method, "
+                  "not reputation.")
+        if unknown_grounding_count and not (grounded_count or ungrounded_count):
+            print("  NOTE: how these responses were collected was not recorded. "
+                  "Pass --grounded-from YYYY-MM-DD if the switch date is known.")
 
         # Import reports
         report_count = 0
@@ -382,13 +430,32 @@ def main():
         help="Email of the admin user to assign data to"
     )
     parser.add_argument(
+        "--grounded-from",
+        metavar="YYYY-MM-DD",
+        help=("Date the source deployment switched on web search grounding. "
+              "Responses collected on or after it are marked grounded, earlier "
+              "ones ungrounded. Only applied to responses whose export does not "
+              "already record it. Omit and they stay unknown, which is the "
+              "honest default: grounded and ungrounded answers measure "
+              "different things, so guessing here would fabricate the "
+              "provenance of the whole history.")
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview import without making changes"
     )
 
     args = parser.parse_args()
-    import_brand_data(args.file, args.admin_email, args.dry_run)
+    grounded_from = None
+    if args.grounded_from:
+        try:
+            grounded_from = datetime.strptime(args.grounded_from, "%Y-%m-%d")
+        except ValueError:
+            print(f"ERROR: --grounded-from must be YYYY-MM-DD, got {args.grounded_from!r}")
+            sys.exit(1)
+
+    import_brand_data(args.file, args.admin_email, args.dry_run, grounded_from)
 
 
 if __name__ == "__main__":

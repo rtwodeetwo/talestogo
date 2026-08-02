@@ -88,8 +88,9 @@ EVIDENCE_TOOL_SPECS: Tuple[ToolSpec, ...] = (
              _schema({})),
     ToolSpec("compare_scopes",
              "Every canonical metric for both windows with deltas, plus "
-             "data_quality showing what was excluded from each side and why. "
-             "Check data_quality before attributing any change to reputation.",
+             "data_quality showing what was excluded from each side and why, "
+             "and how each side was collected (grounded or not). Check "
+             "data_quality before attributing any change to reputation.",
              _schema({})),
     ToolSpec("query_level_deltas",
              "Which individual queries moved most, ranked by absolute change in "
@@ -167,13 +168,21 @@ failures, not evidence that the brand went unmentioned. Six unanalyzed \
 responses look exactly like a reputation drop and are not one. If data quality \
 differs materially between the windows, say so and treat the comparison as \
 suspect.
-2. Compare rates, not raw counts. Collection volume can differ between windows.
-3. Narrow down: which queries moved, which platforms moved, which competitors \
+2. Check data_quality.grounding on BOTH sides. Grounded answers come from a \
+model that searched the web; ungrounded ones come from its training data alone. \
+They measure different things. If one window is mostly grounded and the other \
+mostly ungrounded, THAT is the most likely explanation for any large movement, \
+and you must say so plainly and not attribute the change to reputation. Report \
+it as a change in how the data was collected. "unknown" means it was not \
+recorded; it does not mean ungrounded, so do not use unknown counts as evidence \
+either way.
+3. Compare rates, not raw counts. Collection volume can differ between windows.
+4. Narrow down: which queries moved, which platforms moved, which competitors \
 gained. A change confined to one platform is usually that platform re-ranking. \
 A change across all of them suggests something external.
-4. Read actual responses with response_details before claiming you know what \
+5. Read actual responses with response_details before claiming you know what \
 changed in how the brand is described.
-5. Use web_search only to test a specific hypothesis the internal data raised.
+6. Use web_search only to test a specific hypothesis the internal data raised.
 
 About web_search:
 

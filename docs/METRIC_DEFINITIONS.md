@@ -190,6 +190,25 @@ under: routers/analytics.py:739 counts Yes only, and all of them add a
 `batch_id IS NOT NULL` guard that silently drops imported rows from
 denominators presented as platform totals.
 
+### `grounding_composition`
+
+How the counted rows were collected: grounded, ungrounded, or unrecorded.
+
+Over the counted population, because the question this answers is "what were
+these numbers actually made from".
+
+A grounded answer is what a user of the consumer app sees today; an
+ungrounded one is what the model memorized before its training cutoff. They
+are different measurements, and a window that changes from one to the other
+moves every rate in this module without anything about the brand having
+changed. Comparing two windows collected differently is the single easiest
+way to produce a confident, well evidenced, wrong conclusion, so the
+composition travels with the data quality report rather than being left for
+someone to remember.
+
+`unknown` is its own bucket and must never be folded into `ungrounded`. Rows
+predating the column, and rows imported from another deployment, cannot say.
+
 ### `data_quality`
 
 Everything excluded from the metrics above, so it can be shown, not hidden.
@@ -197,3 +216,7 @@ Everything excluded from the metrics above, so it can be shown, not hidden.
 A parse failure and a genuine "brand not mentioned" are arithmetically
 identical in the current dashboard. Surfacing these counts is what makes the
 difference visible.
+
+`grounding` describes the rows that WERE counted, rather than any exclusion.
+It is here because it belongs to the same question: can these numbers be
+compared with the ones next to them.

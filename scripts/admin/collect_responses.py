@@ -7,7 +7,7 @@ Queries the LLM platforms configured in Admin → LLM Providers and records resp
 import os
 import sys
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import time
 
 # Load environment variables from .env file
@@ -102,9 +102,15 @@ class ResponseCollector:
         except Exception as e:
             print(f"  Warning: Could not log platform error: {e}")
 
-    def query_with_provider(self, provider: ProviderConfig, query_text: str) -> Optional[str]:
+    def query_with_provider(self, provider: ProviderConfig,
+                            query_text: str) -> Tuple[Optional[str], bool]:
         """
         Query an LLM using the GenericLLMClient with a configured provider.
+
+        Returns (response_text, grounded). `grounded` says how the answer that
+        came back was actually collected, not how the provider is configured.
+        Those differ whenever the fallback below fires, and the difference is
+        recorded on the response so a later comparison can see it.
 
         Providers flagged supports_web_search collect with fresh web search
         grounding so responses reflect what real users see in the consumer apps,
@@ -112,39 +118,59 @@ class ResponseCollector:
         longer, so we give them a larger token budget. If a provider is flagged
         for web search but its api_type doesn't actually support grounding, we
         fall back to an ungrounded call rather than failing the query.
+
+        That fallback is worth being loud about. It silently changes what is
+        being measured: the row still lands in the same trend line, but it now
+        answers a different question. Previously nothing recorded that it had
+        happened, so a partly degraded batch was indistinguishable from a clean
+        one.
         """
+        grounded = False
         try:
             if provider.supports_web_search:
                 try:
                     response_text = provider.call_with_web_search(
                         query_text, max_tokens=4096, temperature=0.7
                     )
-                except LLMConfigurationError:
+                    grounded = True
+                except LLMConfigurationError as e:
+                    print(f"  (ungrounded fallback: {e}) ", end="", flush=True)
+                    self.log_platform_error(
+                        provider.display_name,
+                        f"Web search grounding unavailable, collected ungrounded: {e}",
+                        query_text)
                     response_text = provider.call(query_text, max_tokens=1000, temperature=0.7)
             else:
                 response_text = provider.call(query_text, max_tokens=1000, temperature=0.7)
-            return response_text
+            return response_text, grounded
         except LLMAPIError as e:
             error_msg = f"{provider.display_name} API error: {str(e)}"
             print(f"  ✗ {error_msg}")
             self.log_platform_error(provider.display_name, error_msg, query_text)
-            return None
+            return None, False
         except LLMConfigurationError as e:
             error_msg = f"{provider.display_name} configuration error: {str(e)}"
             print(f"  ✗ {error_msg}")
             self.log_platform_error(provider.display_name, error_msg, query_text)
-            return None
+            return None, False
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
             error_msg = f"{provider.display_name} unexpected error: {type(e).__name__}: {e}\n{tb}"
             print(f"  ✗ {error_msg}")
             self.log_platform_error(provider.display_name, error_msg, query_text)
-            return None
+            return None, False
 
     def save_response(self, query_id: str, query_text: str, platform: str,
-                     response_text: str) -> models.Response:
-        """Save a response to the database."""
+                     response_text: str,
+                     collected_grounded: Optional[bool] = None) -> models.Response:
+        """Save a response to the database.
+
+        collected_grounded is recorded as it actually happened. It is written
+        even when False, because "collected without grounding" and "we do not
+        know how this was collected" are different facts and only the second one
+        is allowed to be NULL.
+        """
         # Sanitize for PostgreSQL: strip null bytes and invalid surrogates
         clean_text = response_text.replace("\x00", "").encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace") if response_text else response_text
 
@@ -156,7 +182,8 @@ class ResponseCollector:
             query_text=query_text,
             platform=platform,
             response_text=clean_text,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            collected_grounded=collected_grounded,
         )
         self.db.add(response)
         self.db.commit()
@@ -183,11 +210,13 @@ class ResponseCollector:
 
             print(f"  → {provider.display_name}...", end=" ", flush=True)
 
-            response_text = self.query_with_provider(provider, query.query_text)
+            response_text, grounded = self.query_with_provider(provider, query.query_text)
 
             if response_text:
-                self.save_response(query.query_id, query.query_text, provider.display_name, response_text)
-                print(f"✓ ({len(response_text)} chars)")
+                self.save_response(query.query_id, query.query_text,
+                                   provider.display_name, response_text,
+                                   collected_grounded=grounded)
+                print(f"✓ ({len(response_text)} chars{'' if grounded else ', ungrounded'})")
                 results[provider.display_name] = True
             else:
                 print("✗ No response")

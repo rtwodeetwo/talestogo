@@ -166,6 +166,13 @@ def compare_scopes(db: Session, scope: ComparisonScope) -> Dict[str, Any]:
             "Check data_quality on both sides before attributing a change to "
             "reputation. Rows excluded as unanalyzed are collection or analysis "
             "failures, not evidence that the brand went unmentioned.",
+            # A window collected with web search and one collected without are
+            # answering different questions, and the difference between them is
+            # usually larger than anything reputation does in a month.
+            "data_quality.grounding says how each window was collected. If the "
+            "two differ, the comparison is not like for like and any movement is "
+            "most likely method rather than reputation. 'unknown' means it was "
+            "not recorded, which is not the same as ungrounded.",
         ],
     }
 

@@ -52,6 +52,11 @@ CSV_COLUMNS = [
     'Sources',
     'Notes',
     'Analyzed At (UTC)',
+    # Yes / No / Unknown. Unknown is not No: rows collected before this was
+    # recorded, or imported from another deployment, cannot say. Grounded and
+    # ungrounded answers measure different things, so a trend that crosses a
+    # change here is not a like-for-like comparison.
+    'Grounded',
     # Whether this row is behind the published numbers, and if not, why not.
     'Brand In Query',
     'Counted In Metrics',
@@ -156,6 +161,8 @@ def build_response_rows(db: Session, owner_user_id: int, brand_id: Optional[int]
             response.sources or '',
             response.notes or '',
             response.analyzed_at.isoformat() if response.analyzed_at else '',
+            ('Unknown' if response.collected_grounded is None
+             else 'Yes' if response.collected_grounded else 'No'),
             'Yes' if response.query_id in branded_query_ids else 'No',
             'No' if reason else 'Yes',
             reason,

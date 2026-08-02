@@ -39,6 +39,7 @@ METRICS = [
     mc.descriptor_match_rate,
     mc.descriptor_frequency,
     mc.platform_mention_rates,
+    mc.grounding_composition,
     mc.data_quality,
 ]
 

@@ -91,6 +91,22 @@ class Response(Base):
     notes = Column(Text) # Analysis notes
     analyzed_at = Column(DateTime, nullable=True, index=True) # Index to quickly find unanalyzed
 
+    # How this answer was collected: True with fresh web search grounding, False
+    # without it, NULL when it was not recorded.
+    #
+    # Nullable on purpose. NULL means "unknown", NOT "ungrounded". Rows collected
+    # before this column existed, or imported from another deployment, genuinely
+    # cannot say, and defaulting them to False would assert something nobody
+    # checked. Same reason an unanalyzed response is not counted as "not
+    # mentioned".
+    #
+    # This matters because grounded and ungrounded answers measure different
+    # things: one is what a user of the consumer app sees today, the other is
+    # what the model memorized before its cutoff. Switching between them moves
+    # every trend line, and without this column that step is indistinguishable
+    # from a real change in reputation.
+    collected_grounded = Column(Boolean, nullable=True)
+
     # Composite indexes for performance optimization
     __table_args__ = (
         # Critical index for multi-tenant + multi-brand + batch filtering (used in every analytics query)

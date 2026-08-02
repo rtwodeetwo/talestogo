@@ -207,6 +207,7 @@ def resolve(db: Session, scope: MetricScope) -> MetricPopulation:
             query_known=r.query_id in known_query_ids,
             query_text=r.query_text or "",
             timestamp=r.timestamp,
+            collected_grounded=r.collected_grounded,
         )
         for r in responses
     ]

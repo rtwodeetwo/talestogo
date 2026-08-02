@@ -114,6 +114,11 @@ class ResponseRecord:
     # are decided in exactly one place.
     query_text: str = ""
     timestamp: object = None
+    # True collected with web search grounding, False without it, None when it
+    # was not recorded. None is not False: a row that predates the column cannot
+    # say how it was collected, and treating "unknown" as "ungrounded" would
+    # invent a method change that may never have happened.
+    collected_grounded: Optional[bool] = None
 
     @property
     def has_valid_mention(self) -> bool:
@@ -540,12 +545,42 @@ def query_mention_rates(pop: MetricPopulation) -> Dict[str, MetricValue]:
     }
 
 
-def data_quality(pop: MetricPopulation) -> Dict[str, int]:
+def grounding_composition(pop: MetricPopulation) -> Dict[str, int]:
+    """How the counted rows were collected: grounded, ungrounded, or unrecorded.
+
+    Over the counted population, because the question this answers is "what were
+    these numbers actually made from".
+
+    A grounded answer is what a user of the consumer app sees today; an
+    ungrounded one is what the model memorized before its training cutoff. They
+    are different measurements, and a window that changes from one to the other
+    moves every rate in this module without anything about the brand having
+    changed. Comparing two windows collected differently is the single easiest
+    way to produce a confident, well evidenced, wrong conclusion, so the
+    composition travels with the data quality report rather than being left for
+    someone to remember.
+
+    `unknown` is its own bucket and must never be folded into `ungrounded`. Rows
+    predating the column, and rows imported from another deployment, cannot say.
+    """
+    counted = pop.organic_rows()
+    return {
+        "grounded": sum(1 for r in counted if r.collected_grounded is True),
+        "ungrounded": sum(1 for r in counted if r.collected_grounded is False),
+        "unknown": sum(1 for r in counted if r.collected_grounded is None),
+    }
+
+
+def data_quality(pop: MetricPopulation) -> Dict[str, object]:
     """Everything excluded from the metrics above, so it can be shown, not hidden.
 
     A parse failure and a genuine "brand not mentioned" are arithmetically
     identical in the current dashboard. Surfacing these counts is what makes the
     difference visible.
+
+    `grounding` describes the rows that WERE counted, rather than any exclusion.
+    It is here because it belongs to the same question: can these numbers be
+    compared with the ones next to them.
     """
     return {
         "total_rows": len(pop.rows),
@@ -554,6 +589,7 @@ def data_quality(pop: MetricPopulation) -> Dict[str, int]:
         "unanalyzed_excluded": pop.unanalyzed_count,
         "invalid_enum_excluded": pop.invalid_enum_count,
         "orphan_query_excluded": pop.orphan_count,
+        "grounding": grounding_composition(pop),
     }
 
 
