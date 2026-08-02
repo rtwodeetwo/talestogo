@@ -1,8 +1,10 @@
 """
 Analytics API endpoints.
 
-All analytics calculations are centralized through AnalyticsCache service
-to avoid redundant calculations across different endpoints.
+Metric definitions live in app/services/metrics_core.py and populations are
+resolved by app/services/metrics_query.py. Endpoints here shape those results
+for the frontend; they do not compute rates themselves. See
+docs/METRIC_DEFINITIONS.md.
 
 Redis caching is used to significantly reduce database load and improve
 response times for frequently accessed analytics data.
@@ -18,6 +20,7 @@ from datetime import datetime
 from .. import analytics, models, config
 from ..auth import get_current_user
 from ..database import get_db
+from ..services import metrics_core, metrics_query
 from ..services.analytics_cache import AnalyticsCache
 from ..services.metrics import calculate_share_of_voice, calculate_competitor_threats
 from ..services.period_ranges import (
@@ -79,7 +82,7 @@ def _high_threat_count_for_range(
         query = query.filter(models.Response.brand_id == brand_id)
     query = query.filter(
         models.Response.timestamp >= start,
-        models.Response.timestamp <= end
+        models.Response.timestamp < end
     )
     responses = query.all()
     if not responses:
@@ -120,54 +123,66 @@ def _get_period_over_period_dashboard(
      prev_start, prev_end, prev_label) = get_period_comparison_ranges(
         db, owner_user_id, brand_id, period, period_start)
 
-    cur_cache = AnalyticsCache(
-        db, user_id=owner_user_id, brand_id=brand_id,
-        date_from=cur_start, date_to=cur_end
-    )
-    prev_cache = AnalyticsCache(
-        db, user_id=owner_user_id, brand_id=brand_id,
-        date_from=prev_start, date_to=prev_end
-    )
-    cur = cur_cache.get_dashboard_data()
-    prev = prev_cache.get_dashboard_data()
+    def metrics_for(start, end):
+        scope = metrics_query.MetricScope(
+            owner_user_id=owner_user_id, brand_id=brand_id, start=start, end=end)
+        population = metrics_query.resolve(db, scope)
+        # An empty window is not "everything is zero". A period with no
+        # collection in it used to report 0 for every metric, so comparing a
+        # live quarter against an empty one produced a spurious full-value jump
+        # rather than saying there is nothing to compare against.
+        if not population.organic_rows():
+            return None
+        return _canonical_dashboard_metrics_from_population(population)
 
-    def delta(key: str) -> int:
-        return round((cur.get(key, 0) or 0) - (prev.get(key, 0) or 0))
+    current = metrics_for(cur_start, cur_end)
+    previous = metrics_for(prev_start, prev_end)
 
-    def brand_leadership_visibility(cache: AnalyticsCache) -> float:
-        sov = cache.get_share_of_voice_data()
-        brand_row = next((row for row in sov if row.get('is_brand')), None)
-        return brand_row.get('leadership_visibility', 0) if brand_row else 0
+    if current is None:
+        payload = _empty_dashboard_payload()
+        payload.update({
+            'comparison_mode': period,
+            'period_label': cur_label,
+            'previous_period_label': prev_label,
+        })
+        return payload
 
-    change_leadership_visibility = round(
-        brand_leadership_visibility(cur_cache) - brand_leadership_visibility(prev_cache)
-    )
+    def delta(key: str):
+        """Difference of two unrounded values, rounded once.
+
+        Returns 0 when the baseline period has no data at all, rather than
+        reporting the current value as if it were the size of the change.
+        """
+        if previous is None:
+            return 0
+        before, after = previous.get(key), current.get(key)
+        if before is None or after is None:
+            return 0
+        return round(after - before, 1)
 
     # High-threat competitor delta (headline period vs baseline period)
     cur_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, cur_start, cur_end)
     prev_high_threats = _high_threat_count_for_range(db, owner_user_id, brand_id, prev_start, prev_end)
     change_high_threats = cur_high_threats - prev_high_threats
 
-    return {
-        'mention_rate': cur.get('mention_rate', 0),
-        'mention_count': cur.get('mention_count', 0),
-        'total_responses': cur.get('total_responses', 0),
-        'positive_sentiment': cur.get('positive_sentiment', 0),
-        'descriptor_match': cur.get('descriptor_match', 0),
-        'share_of_voice': cur.get('share_of_voice', 0),
+    payload = dict(current)
+    payload.update({
         'change_mention_rate': delta('mention_rate'),
         'change_sentiment': delta('positive_sentiment'),
         'change_descriptor': delta('descriptor_match'),
         'change_share_of_voice': delta('share_of_voice'),
         'change_high_threats': change_high_threats,
-        'change_leadership_visibility': change_leadership_visibility,
-        'leading_position': cur.get('leading_position', 'N/A'),
+        'change_leadership_visibility': delta('leadership_visibility'),
         'comparison_mode': period,
         'period_label': cur_label,
         'previous_period_label': prev_label,
+        # True when the baseline period has no data, so the UI can say "no
+        # comparison available" instead of drawing a flat trend arrow.
+        'previous_period_has_data': previous is not None,
         'collection_date': None,
         'previous_collection_date': None,
-    }
+    })
+    return payload
 
 
 @router.get("/dashboard", response_model=Dict[str, Any])
@@ -182,8 +197,17 @@ def get_dashboard_analytics(
     """
     Get key metrics for the dashboard for the active brand.
 
-    Uses BatchAnalytics for basic metrics (mention_rate, sentiment, positioning)
-    and AnalyticsCache for descriptor_match and share_of_voice calculations.
+    Every figure comes from app/services/metrics_core.py, so this endpoint, the
+    exports, the generated reports and the highlights email all use one set of
+    definitions. See docs/METRIC_DEFINITIONS.md.
+
+    Previously this payload was assembled from two different generations of data
+    at once: mention_rate, sentiment and positioning were read from the stored
+    BatchAnalytics row while descriptor_match and share_of_voice were recomputed
+    live by AnalyticsCache. Because BatchAnalytics is only written at batch
+    completion and never refreshed when a query is edited or a response is
+    re-analyzed, the two halves of one card row could disagree indefinitely.
+
     Optionally filter by batch_id for specific collection batches, or pass
     period="month" / period="quarter" for a period-over-period comparison.
     period_start ("YYYY-MM-DD") picks a specific month/quarter; if omitted, the
@@ -197,122 +221,137 @@ def get_dashboard_analytics(
         return _get_period_over_period_dashboard(
             db, owner_user_id, brand_id, period, parse_period_start(period_start))
 
-    # Get the batch to use - either specified or latest
-    if batch_id:
-        latest_analytics = db.query(models.BatchAnalytics).filter(
-            models.BatchAnalytics.user_id == owner_user_id,
-            models.BatchAnalytics.brand_id == brand_id,
-            models.BatchAnalytics.batch_id == batch_id
-        ).first()
-    else:
-        latest_analytics = db.query(models.BatchAnalytics).filter(
-            models.BatchAnalytics.user_id == owner_user_id,
-            models.BatchAnalytics.brand_id == brand_id
-        ).order_by(models.BatchAnalytics.collection_date.desc()).first()
-
-    if not latest_analytics:
-        # No data available
-        return {
-            'mention_rate': 0,
-            'mention_count': 0,
-            'total_responses': 0,
-            'positive_sentiment': 0,
-            'descriptor_match': 0,
-            'share_of_voice': 0,
-            'change_mention_rate': 0,
-            'change_sentiment': 0,
-            'change_descriptor': 0,
-            'change_share_of_voice': 0,
-            'change_high_threats': None,
-            'change_leadership_visibility': 0,
-            'leading_position': 'N/A'
-        }
-
-    # Use AnalyticsCache for descriptor_match and share_of_voice
-    # These require complex calculations not stored in BatchAnalytics
-    analytics_batch_id = batch_id or latest_analytics.batch_id
-    cache = AnalyticsCache(
-        db,
-        user_id=owner_user_id,
-        brand_id=brand_id,
-        batch_id=analytics_batch_id
+    # Resolve the batch from collection_batches rather than batch_analytics, so
+    # the dashboard works for a batch whose cached analytics were never written.
+    batch_query = db.query(models.CollectionBatch).filter(
+        models.CollectionBatch.user_id == owner_user_id,
+        models.CollectionBatch.brand_id == brand_id,
     )
-    cache_data = cache.get_dashboard_data()
-    descriptor_match = cache_data.get('descriptor_match', 0)
-    share_of_voice = cache_data.get('share_of_voice', 0)
-    change_descriptor = cache_data.get('change_descriptor', 0)
-    change_share_of_voice = cache_data.get('change_share_of_voice', 0)
-
-    # Get previous batch for change calculations
-    previous_analytics = db.query(models.BatchAnalytics).filter(
-        models.BatchAnalytics.user_id == owner_user_id,
-        models.BatchAnalytics.brand_id == brand_id,
-        models.BatchAnalytics.collection_date < latest_analytics.collection_date
-    ).order_by(models.BatchAnalytics.collection_date.desc()).first()
-
-    # Calculate metrics from BatchAnalytics (same as trend charts)
-    mention_rate = latest_analytics.mention_rate
-    mention_count = latest_analytics.mention_count
-    total_responses = latest_analytics.total_responses
-
-    # Sentiment: positive rate = (very_positive + positive) / total mentions
-    total_mentions = mention_count
-    if total_mentions > 0:
-        positive_count = latest_analytics.very_positive_count + latest_analytics.positive_count
-        positive_sentiment = round((positive_count / total_mentions) * 100)
+    if batch_id:
+        current_batch = batch_query.filter(
+            models.CollectionBatch.id == batch_id).first()
     else:
-        positive_sentiment = 0
+        current_batch = batch_query.order_by(
+            models.CollectionBatch.started_at.desc()).first()
 
-    # Positioning: leader visibility
-    if total_responses > 0:
-        leader_pct = round((latest_analytics.leader_count / total_responses) * 100)
-    else:
-        leader_pct = 0
+    if not current_batch:
+        return _empty_dashboard_payload()
 
-    # Determine leading position
-    positions = {
-        'Leader': latest_analytics.leader_count,
-        'Featured': latest_analytics.featured_count,
-        'Listed': latest_analytics.listed_count,
-        'Not Mentioned': latest_analytics.not_mentioned_count
+    previous_batch = db.query(models.CollectionBatch).filter(
+        models.CollectionBatch.user_id == owner_user_id,
+        models.CollectionBatch.brand_id == brand_id,
+        models.CollectionBatch.started_at < current_batch.started_at,
+    ).order_by(models.CollectionBatch.started_at.desc()).first()
+
+    current = _canonical_dashboard_metrics(db, owner_user_id, brand_id, current_batch.id)
+    previous = (
+        _canonical_dashboard_metrics(db, owner_user_id, brand_id, previous_batch.id)
+        if previous_batch else None
+    )
+
+    def delta(key):
+        """Difference of two unrounded values, rounded once.
+
+        The old code rounded each operand and then subtracted, so a real change
+        of 0.4 points could surface as 0 or as 1 depending on where the operands
+        fell. Both sides are None-safe: with no previous batch, or with an empty
+        population on either side, there is no change to report.
+        """
+        if previous is None:
+            return 0
+        before, after = previous.get(key), current.get(key)
+        if before is None or after is None:
+            return 0
+        return round(after - before, 1)
+
+    payload = dict(current)
+    payload.update({
+        'change_mention_rate': delta('mention_rate'),
+        'change_sentiment': delta('positive_sentiment'),
+        'change_descriptor': delta('descriptor_match'),
+        'change_share_of_voice': delta('share_of_voice'),
+        'change_high_threats': None,
+        # Same formula as the value it sits next to. Previously the tile showed
+        # Leader + Top 3 + Featured while this arrow tracked Leader alone.
+        'change_leadership_visibility': delta('leadership_visibility'),
+        'collection_date': current_batch.started_at.isoformat() if current_batch.started_at else None,
+        'previous_collection_date': (
+            previous_batch.started_at.isoformat()
+            if previous_batch and previous_batch.started_at else None
+        ),
+    })
+    return payload
+
+
+def _empty_dashboard_payload() -> Dict[str, Any]:
+    """Shape returned when the brand has no batches at all."""
+    return {
+        'mention_rate': None,
+        'mention_count': 0,
+        'total_responses': 0,
+        'positive_sentiment': None,
+        'descriptor_match': None,
+        'share_of_voice': None,
+        'leadership_visibility': None,
+        'positioning_average': None,
+        'change_mention_rate': 0,
+        'change_sentiment': 0,
+        'change_descriptor': 0,
+        'change_share_of_voice': 0,
+        'change_high_threats': None,
+        'change_leadership_visibility': 0,
+        'leading_position': 'N/A',
+        'data_quality': {
+            'total_rows': 0, 'counted': 0, 'branded_excluded': 0,
+            'unanalyzed_excluded': 0, 'invalid_enum_excluded': 0,
+            'orphan_query_excluded': 0,
+        },
     }
-    leading_position = max(positions, key=positions.get) if any(positions.values()) else 'N/A'
 
-    # Calculate changes from previous batch
-    change_mention_rate = 0
-    change_sentiment = 0
-    change_leadership_visibility = 0
 
-    if previous_analytics:
-        change_mention_rate = round(mention_rate - previous_analytics.mention_rate)
+def _canonical_dashboard_metrics(
+    db: Session, owner_user_id: int, brand_id: Optional[int], batch_id: int
+) -> Dict[str, Any]:
+    """Every dashboard figure for one batch, from the canonical definitions."""
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id))
+    return _canonical_dashboard_metrics_from_population(population)
 
-        # Previous positive sentiment
-        prev_mentions = previous_analytics.mention_count
-        if prev_mentions > 0:
-            prev_positive = round(((previous_analytics.very_positive_count + previous_analytics.positive_count) / prev_mentions) * 100)
-            change_sentiment = positive_sentiment - prev_positive
 
-        # Previous leader visibility
-        if previous_analytics.total_responses > 0:
-            prev_leader = round((previous_analytics.leader_count / previous_analytics.total_responses) * 100)
-            change_leadership_visibility = leader_pct - prev_leader
+def _canonical_dashboard_metrics_from_population(population) -> Dict[str, Any]:
+    """Shape a resolved population into the dashboard payload.
+
+    Shared by batch mode and period mode so switching the comparison dropdown
+    cannot change which definition produced the number. Period mode used to run
+    on a separate AnalyticsCache path that rounded to integers and divided
+    sentiment by a different denominator.
+    """
+    mention = metrics_core.mention_rate(population)
+    sentiment = metrics_core.positive_sentiment_rate(population)
+    descriptor = metrics_core.descriptor_match_rate(population)
+    leadership = metrics_core.leadership_visibility(population)
+    brand_share, _ = metrics_core.share_of_voice(population)
+    positioning = metrics_core.positioning_distribution(population)
+
+    ranked = [(label, value.numerator) for label, value in positioning.items()]
+    leading_position = (
+        max(ranked, key=lambda item: item[1])[0]
+        if any(count for _, count in ranked) else 'N/A'
+    )
 
     return {
-        'mention_rate': mention_rate,
-        'mention_count': mention_count,
-        'total_responses': total_responses,
-        'positive_sentiment': positive_sentiment,
-        'descriptor_match': descriptor_match,
-        'share_of_voice': share_of_voice,
-        'change_mention_rate': change_mention_rate,
-        'change_sentiment': change_sentiment,
-        'change_descriptor': change_descriptor,
-        'change_share_of_voice': change_share_of_voice,
-        'change_high_threats': None,
-        'change_leadership_visibility': change_leadership_visibility,
+        'mention_rate': mention.value,
+        'mention_count': int(mention.numerator),
+        'total_responses': int(mention.denominator),
+        'positive_sentiment': sentiment.value,
+        'descriptor_match': descriptor.value,
+        'share_of_voice': brand_share.value,
+        'leadership_visibility': leadership.value,
+        'positioning_average': metrics_core.positioning_average(population).value,
         'leading_position': leading_position,
-        'collection_date': latest_analytics.collection_date.isoformat() if latest_analytics.collection_date else None,
-        'previous_collection_date': previous_analytics.collection_date.isoformat() if previous_analytics and previous_analytics.collection_date else None
+        # What was left out and why. Without this a failed collection and a real
+        # drop in visibility look identical on screen.
+        'data_quality': metrics_core.data_quality(population),
     }
 
 
@@ -508,7 +547,7 @@ def get_competitor_threats_analysis(
             db, owner_user_id, brand_id, period, parse_period_start(period_start))
         query = query.filter(
             models.Response.timestamp >= cur_start,
-            models.Response.timestamp <= cur_end
+            models.Response.timestamp < cur_end
         )
     elif batch_id:
         query = query.filter(models.Response.batch_id == batch_id)
@@ -694,7 +733,10 @@ def get_sentiment_over_time(
 def get_brand_mentions_by_llm(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
-    brand_id: Optional[int] = Depends(get_active_brand_id)
+    brand_id: Optional[int] = Depends(get_active_brand_id),
+    # These endpoints used to ignore scoping entirely and always report
+    # all-time figures, even when displayed under a period or batch heading.
+    batch_id: Optional[int] = None,
 ):
     """
     Get brand mention rates broken down by LLM platform.
@@ -706,52 +748,34 @@ def get_brand_mentions_by_llm(
 
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
 
-    # Query responses grouped by platform, joining with Query to filter for organic queries only
-    from sqlalchemy import func, case
+    # Same definition as the headline mention rate, so the per-LLM chart adds up
+    # to the number above it. This previously counted 'Yes' only, dropping
+    # Indirect mentions, and required batch_id IS NOT NULL, which silently
+    # excluded imported rows from denominators presented as platform totals.
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id)
+        if batch_id else metrics_query.MetricScope(owner_user_id, brand_id))
 
-    platform_stats = db.query(
-        models.Response.platform,
-        func.count(models.Response.id).label('total'),
-        func.sum(
-            case(
-                (models.Response.brand_mentioned == 'Yes', 1),
-                else_=0
-            )
-        ).label('mentioned')
-    ).join(
-        models.Query,
-        (models.Response.query_id == models.Query.query_id) &
-        (models.Response.user_id == models.Query.user_id) &
-        (models.Response.brand_id == models.Query.brand_id)
-    ).filter(
-        models.Response.user_id == owner_user_id,
-        models.Response.brand_id == brand_id,
-        models.Response.platform.isnot(None),
-        models.Response.batch_id.isnot(None),  # Only include responses with batch_id for consistency with trend data
-        models.Query.brand_in_query == False  # Only organic queries
-    ).group_by(
-        models.Response.platform
-    ).all()
-
-    # Calculate mention rate for each platform
-    results = []
-    for platform, total, mentioned in platform_stats:
-        mention_rate = (mentioned / total * 100) if total > 0 else 0
-        results.append({
+    return [
+        {
             'platform': platform,
-            'total_responses': total,
-            'mentions': mentioned,
-            'mention_rate': round(mention_rate, 1)
-        })
+            'total_responses': int(value.denominator),
+            'mentions': int(value.numerator),
+            'mention_rate': value.value if value.value is not None else 0,
+        }
+        for platform, value in metrics_core.platform_mention_rates(population).items()
+    ]
 
-    return results
 
 
 @router.get("/positioning-by-llm")
 def get_positioning_by_llm(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
-    brand_id: Optional[int] = Depends(get_active_brand_id)
+    brand_id: Optional[int] = Depends(get_active_brand_id),
+    # These endpoints used to ignore scoping entirely and always report
+    # all-time figures, even when displayed under a period or batch heading.
+    batch_id: Optional[int] = None,
 ):
     """
     Get brand positioning breakdown by LLM platform.
@@ -763,48 +787,24 @@ def get_positioning_by_llm(
 
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
 
-    # Query responses grouped by platform and position
-    # Exclude brand_in_query responses for consistency with positioning/breakdown endpoint
-    from sqlalchemy import func
+    # 'Top 3' is reported rather than silently dropped. The old filter listed
+    # only Leader/Featured/Listed/Not Mentioned, so a Top 3 placement vanished
+    # from this chart while counting toward every other positioning surface.
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id)
+        if batch_id else metrics_query.MetricScope(owner_user_id, brand_id))
 
-    platform_positioning = db.query(
-        models.Response.platform,
-        models.Response.brand_position,
-        func.count(models.Response.id).label('count')
-    ).join(
-        models.Query,
-        (models.Response.query_id == models.Query.query_id) &
-        (models.Response.user_id == models.Query.user_id) &
-        (models.Response.brand_id == models.Query.brand_id)
-    ).filter(
-        models.Response.user_id == owner_user_id,
-        models.Response.brand_id == brand_id,
-        models.Response.platform.isnot(None),
-        models.Response.brand_position.isnot(None),
-        models.Response.batch_id.isnot(None),  # Only include responses with batch_id for consistency with trend data
-        models.Query.brand_in_query == False  # Exclude branded queries for organic positioning
-    ).group_by(
-        models.Response.platform,
-        models.Response.brand_position
-    ).all()
-
-    # Organize data by platform
     platforms = {}
-    for platform, position, count in platform_positioning:
-        if platform not in platforms:
-            platforms[platform] = {
-                'platform': platform,
-                'Leader': 0,
-                'Featured': 0,
-                'Listed': 0,
-                'Not Mentioned': 0,
-                'total': 0
-            }
-
-        # Map the position to our standard categories
-        if position in ['Leader', 'Featured', 'Listed', 'Not Mentioned']:
-            platforms[platform][position] = count
-            platforms[platform]['total'] += count
+    for row in population.organic_rows():
+        if row.brand_position not in metrics_core.POSITION_VALUES:
+            continue
+        entry = platforms.setdefault(row.platform, {
+            'platform': row.platform,
+            **{label: 0 for label in metrics_core.POSITION_VALUES},
+            'total': 0,
+        })
+        entry[row.brand_position] += 1
+        entry['total'] += 1
 
     return list(platforms.values())
 

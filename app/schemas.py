@@ -283,12 +283,18 @@ class BatchAnalyticsBase(BaseModel):
     batch_id: int
     collection_date: datetime.datetime
     total_responses: int = 0
+    analyzed_count: int = 0
+    unanalyzed_count: int = 0
+    invalid_count: int = 0
     mention_count: int = 0
+    direct_mention_count: int = 0
     mention_rate: float = 0.0
     leader_count: int = 0
+    top3_count: int = 0
     featured_count: int = 0
     listed_count: int = 0
     not_mentioned_count: int = 0
+    sentiment_base_count: int = 0
     very_positive_count: int = 0
     positive_count: int = 0
     neutral_count: int = 0
@@ -602,3 +608,93 @@ class SiteConfig(SiteConfigBase):
     """Response schema for site configuration."""
     pass
 
+
+
+# ============================================================================
+# INVESTIGATION SCHEMAS
+# ============================================================================
+
+class InvestigationCreate(BaseModel):
+    """Request body for triggering an investigation."""
+    brand_id: Optional[int] = None
+    # 'month' (default), 'quarter', or 'batch'. A single collection batch is a
+    # noisy comparison, so a whole month is the more useful default.
+    comparison_mode: str = 'month'
+    # For month/quarter: any "YYYY-MM-DD" inside the period to investigate.
+    # Omitted means the last complete period.
+    period_start: Optional[str] = None
+    # For batch mode: the batch to compare against its predecessor. Omitted
+    # means the most recent batch.
+    batch_id: Optional[int] = None
+    model_config = ConfigDict(extra='forbid')
+
+
+class InvestigationLimitation(BaseModel):
+    """Something the run could not do, and what it means for the conclusions."""
+    limitation: str
+    impact: str
+
+
+class InvestigationSummary(BaseModel):
+    """List view."""
+    id: int
+    title: Optional[str] = None
+    status: str
+    trigger_type: str
+    comparison_mode: str
+    current_period_label: Optional[str] = None
+    previous_period_label: Optional[str] = None
+    current_batch_id: Optional[int] = None
+    previous_batch_id: Optional[int] = None
+    total_tool_calls: int = 0
+    has_limitations: bool = False
+    started_at: Optional[datetime.datetime] = None
+    completed_at: Optional[datetime.datetime] = None
+    created_at: datetime.datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestigationDetail(BaseModel):
+    """Full detail view."""
+    id: int
+    user_id: int
+    brand_id: int
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    status: str
+    trigger_type: str
+    comparison_mode: str
+    current_batch_id: Optional[int] = None
+    previous_batch_id: Optional[int] = None
+    current_period_start: Optional[datetime.datetime] = None
+    current_period_end: Optional[datetime.datetime] = None
+    current_period_label: Optional[str] = None
+    previous_period_start: Optional[datetime.datetime] = None
+    previous_period_end: Optional[datetime.datetime] = None
+    previous_period_label: Optional[str] = None
+    trigger_metrics: Optional[str] = None
+    key_findings: Optional[str] = None
+    recommended_actions: Optional[str] = None
+    limitations: Optional[str] = None
+    total_tool_calls: int = 0
+    total_tokens_used: int = 0
+    error_message: Optional[str] = None
+    started_at: Optional[datetime.datetime] = None
+    completed_at: Optional[datetime.datetime] = None
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InvestigationToolInvocationSchema(BaseModel):
+    """One piece of evidence the agent looked at."""
+    id: int
+    sequence: int
+    tool_name: str
+    tool_input_json: Optional[str] = None
+    tool_output_json: Optional[str] = None
+    status: str
+    error: Optional[str] = None
+    duration_ms: Optional[int] = None
+    created_at: datetime.datetime
+    model_config = ConfigDict(from_attributes=True)

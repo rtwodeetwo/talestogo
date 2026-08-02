@@ -15,19 +15,63 @@ The private dev repo is `tales_project` (local path `/Users/rkremen/Documents/Co
 
 If a change is needed in both repos, treat them as two separate, independent commits in two separate working trees.
 
-## 📍 Canonical Source: GitHub
+## 📍 Two Destinations: ALWAYS ASK WHICH ONE
 
-The single source of truth for TalesToGo is **`github.com/rtwodeetwo/talestogo`**. This is the version shared with PNNL and other U.S. National Labs for self-deployment.
+TalesToGo has **two** legitimate remotes, and they do different jobs. Which one a
+given piece of work belongs on is Rachel's call, not something to infer.
 
-- **All new work lands here.** Commits, branches, PRs, and merges happen on `rtwodeetwo/talestogo`.
-- **`origin` remote = GitHub** in this working tree. Pushes default to GitHub.
+| Remote | Where | Role |
+|---|---|---|
+| `origin` | `github.com/rtwodeetwo/talestogo` | Canonical source. Development, PRs, releases, the version shared with PNNL and other U.S. National Labs. |
+| `pppl` | `git.pppl.gov/rkremen/talestogo` | **One possible deployment line.** PPPL's own instance builds from here. |
 
-### Other places `talestogo` exists — do NOT confuse for canonical
+### ⚠️ Ask every time, before every push
 
-- **`git.pppl.gov/rkremen/talestogo`** — an older PPPL GitLab sister repo that predates the May 2026 strip-to-Tales-only cleanup. It still has the pre-strip codebase (the 8 removed products, `deployment-kit-pppl/`, ~200 stripped files). It is **NOT** the canonical source and is **NOT** kept in sync. Do not push new work there assuming it's a mirror — its `main` is on a different history line from GitHub's `main` and force-pushing would destroy work that may still be referenced by something. If a future operation needs to update it, treat it as a separate codebase that needs a thought-out migration, not a quick `git push`.
-- **`tales_project`** — see the Critical Rule above. Private dev repo, never touched from this working tree.
+**Before pushing, committing to a shared branch, opening a PR or MR, or tagging,
+ask Rachel explicitly: GitHub or GitLab?** Confirm it each time, even if the
+answer was obvious last time.
 
-If you find yourself about to push TalesToGo work to anywhere other than `origin` / `rtwodeetwo/talestogo`, stop and confirm with Rachel first.
+Do NOT infer the destination from:
+
+- where the previous push in this session went,
+- the branch name or what the branch contains,
+- which remote happens to be configured, or which one `git push` would default to,
+- the fact that Rachel just approved a push to the other one.
+
+Approval for one destination is never approval for the other. If she has not said
+which in this exchange, ask before doing anything that writes to a remote.
+
+### Why the distinction has teeth
+
+Pushing to GitLab's **default branch is a live deployment**. `.gitlab-ci.yml`
+builds an image with Kaniko and then fires a Portainer webhook, which redeploys
+`tales.pppl.gov`. Pushing to any **other** branch on GitLab only builds an image
+tagged with the branch slug; the deploy job is not even created, so it is safe.
+
+GitHub has no such side effect. A push there changes what labs will clone, but
+nothing restarts.
+
+So the two are not interchangeable even when the code is identical, and "push
+this" is ambiguous until she says where.
+
+### Current state of the GitLab repo (as of 2026-08-02)
+
+- `main` is at `aa54b1b8`, 26 February 2026, and predates the strip-to-Tales-only
+  cleanup. It still carries the 8 removed products.
+- `audit/metrics-reconciliation` (all of 2.0) was pushed there and built cleanly;
+  the image is in the registry as `rkremen/talestogo:audit-metrics-reconciliation`.
+- The histories ARE related, common ancestor `021952da`, contrary to an earlier
+  note in this file that said otherwise.
+- Local tag `archive/pppl-main-2026-02-26` anchors the old GitLab `main` in case
+  it is ever overwritten. It is deliberately not pushed, because a tag push would
+  trigger a CI build of the February codebase.
+
+### The third place, which is never a destination
+
+**`tales_project`**: see the Critical Rule at the top of this file. Private dev
+repo, never read from or written to from this working tree. Its production
+*database* may legitimately be read for a data migration (that is a database, not
+the codebase), but the repo itself is off limits.
 
 ## Session Log: 2026-05-08 — Strip-to-Tales-Only Cleanup
 
@@ -175,7 +219,171 @@ Merged via [PR #15](https://github.com/rtwodeetwo/talestogo/pull/15) (branch `fe
 
 **Follow-up:** drafted a PNNL/labs update email describing the grounding switch, the latest models, the DB opt-in, and the comparability caveat (not yet sent).
 
+### Session 4: 2026-08-01 — Metric audit, reports removal, investigations
+
+Branch `audit/metrics-reconciliation`, cut from `release/2.0`. **14 commits, not
+yet pushed.** All tests pass (284), backend imports at 170 routes, frontend
+builds.
+
+#### Why this happened
+
+Rachel had lost confidence in Tales' statistics after many rounds of changes. An
+audit found the same conceptual metric computed 4 to 9 different ways: 9 mention
+rates, 9 positive-sentiment rates, 4 share of voice, 6 positioning. On a
+controlled dataset the implementations spread by **29 percentage points** on
+mention rate. Surfaces that were meant to agree could not, by construction.
+
+Crucially, the gaps were largest where the data was messy (unanalyzed rows,
+branded queries, malformed values), which is exactly what real collection runs
+look like.
+
+#### What was built
+
+- **`app/services/metrics_core.py`** — one definition per metric, pure (no
+  Session, no ORM, no clock), every result carrying its numerator and
+  denominator. **This is now the only place a rate may be computed.**
+- **`app/services/metrics_query.py`** — the single population resolver.
+  `MetricScope` covers batch, month and quarter. Windows are half-open
+  `[start, end)` and timezone-aware.
+- **`tests/fixtures/golden_dataset.py`** + **`tests/golden_expected.py`** — 83
+  deterministic rows and hand-derived constants with the arithmetic written out.
+  The expectations were never computed from the code under test.
+- **`tests/test_metric_reconciliation.py`** — cross-surface matrix. Was a 13
+  point spread across four values; now **0.0**.
+- **`tests/test_metrics_guards.py`** — AST purity check, an inline-math
+  allowlist that may only shrink (23 → 12 entries), and invariants.
+- **`docs/METRIC_RECONCILIATION_2026-08.md`** — the findings report.
+- **`docs/METRIC_DEFINITIONS.md`** — generated from docstrings so the published
+  methodology cannot drift from the code again.
+
+#### Defects fixed along the way
+
+Unanalyzed responses counted as "brand not mentioned" (so a failed collection
+looked like a reputation drop); Excel silently truncating answers at 32,767
+characters; one control character killing an entire export; shared brands 404ing
+on export; sentiment dividing a Yes-only numerator by a Yes+Indirect
+denominator; `Top 3` dropped by the storage layer and scored as `Not Mentioned`;
+the Leadership Visibility tile and its own trend arrow using different formulas;
+the positioning bar chart silently absent from every report for want of a dict
+key; Redis cache entries for the default view being uninvalidatable; and a
+test-suite isolation bug that had been writing real database files into the repo
+root.
+
+#### Product changes (Rachel's direction)
+
+- **Reports removed entirely**, ~3,700 lines. Replaced by period-scoped data
+  exports at `/exports/responses.csv`, which carry `Counted In Metrics` and
+  `Excluded Because` columns so any dashboard figure can be reproduced from the
+  spreadsheet.
+- **Month/quarter comparison fixed**: an empty baseline no longer reports a
+  spurious full-value jump, precision matches batch mode, and windows are
+  Eastern-local rather than naive UTC.
+- **Monthly highlights email removed.** Quarterly retained.
+
+#### Investigations (new feature, partially built)
+
+Phases A and B were merged this session: the record, its lifecycle, and a
+deterministic evidence pack of 8 tools over `metrics_core`. No LLM was called
+yet. Phases C, D and E were completed in session 5, below.
+
+### Session 5: 2026-08-01 — Investigations C/D/E, SAST that tells the truth
+
+Same branch, `audit/metrics-reconciliation`. Tests: **337 passing** (up from
+284). Backend imports at 170 routes, frontend builds, all scans clean.
+
+#### Investigations, Phases C, D and E
+
+Full spec, as built, is in `docs/INVESTIGATIONS_DESIGN.md`.
+
+- **Phase C, the agent loop.** `app/services/investigation/service.py`, plus
+  `agent_client.py` (tool-use adapters for the Anthropic, OpenAI and Google
+  dialects) and `search.py` (one scoped web-search tool over whatever grounded
+  provider is configured). The reasoning model is chosen from
+  `LLMProviderManager` by api_type, never hardcoded, and Perplexity's `sonar`
+  models are excluded because they cannot call tools. Runs on a
+  `ThreadPoolExecutor` capped at 4, following `app/scheduler.py`.
+- **Phase D, the frontend.** `frontend/src/pages/analytics/Investigations.tsx`
+  at `/analytics/investigations`, indented under Analytics. Polls only while
+  something is running. Limitations render as information, not as an error.
+  `**bold**` becomes React nodes; no `dangerouslySetInnerHTML`, because
+  summaries are model-written from collected AI responses.
+- **Phase E, auto-triggers.** `app/services/investigation/triggers.py`, hooked
+  into `data_pipeline.py` after the batch-analytics recompute through
+  `check_after_collection`, which cannot raise. Thresholds are env-overridable
+  (see `docs/ENV_VARS_REFERENCE.md`); dedupe is on
+  `(brand_id, comparison_mode, current_period_start)`; it never fires on an
+  empty window.
+
+The through-line of the whole feature is keeping "the tool failed" distinct from
+"the tool found nothing". They are the same shape in a JSON payload and opposite
+in meaning, and conflating them turns a dead web search into a confident finding
+that there was no external news. Every dialect adapter marks failures in the way
+that dialect supports, the prompt says what an error means, and there are tests
+for each.
+
+#### Test isolation fix
+
+`tests/conftest.py` now stubs `service.submit` for the whole suite. Without it a
+test that triggers an investigation spawns a worker that opens its own
+`SessionLocal` against the configured `DATABASE_URL`, which is how test runs came
+to be writing database files into the repo root.
+
+#### SAST: "could not run" is now separate from "found something"
+
+`./scripts/run_sast.sh` reports `COULD NOT RUN:` and `FINDINGS:` separately and
+says which happened in its summary. Both still fail the run. The old script
+reported semgrep's rule-download failure as "semgrep reported findings in app/",
+which is exactly backwards, and a gate that conflates the two teaches everyone
+to ignore it.
+
+Two working remedies for the download failure, both now in
+`docs/SECURITY_NOTES.md`. The certifi one from the previous handover note is
+confirmed correct, with one trap worth naming: the chain must be taken **off the
+wire** with `openssl s_client`, not pulled from the system keychain by name. The
+keychain's Zscaler root is rejected by OpenSSL 3 ("Basic Constraints of CA cert
+not marked critical"), which produces a different verification error that looks
+like the same problem and is not. The second remedy is new:
+`scripts/fetch_semgrep_rules.sh` downloads the packs with curl and
+`SEMGREP_RULES_DIR=.semgrep-rules ./scripts/run_sast.sh` scans against them,
+which needs no per-machine trust setup and is the only option that works for a
+lab with no access to semgrep.dev at all. Rule ids gain a path prefix when
+loaded from files, so any rule named in the script or in a `# nosemgrep:`
+comment carries both spellings.
+
+Result with local rules: bandit 0, semgrep 0 (one pre-existing raw-SQL finding
+in `app/migrations/run_migrations.py` suppressed inline with its reason: the
+table name comes from a hardcoded whitelist and a table name cannot be a bound
+parameter), pip-audit 0 unaccepted, npm audit 0 unaccepted.
+
 ### NEXT SESSION
+
+1. **Merge plan for 2.0 on GitHub.** `release/2.0` was already merged to `main`
+   via PR #23, and `release/2.0` is a direct ancestor of this branch, so this is
+   a clean fast-forward with no force-push. Suggested: fast-forward `release/2.0`
+   onto this work, PR to `main`, then tag `v2.0.0` (the only tag today is
+   `v1.0.0`). Note `main` has since also taken the change-password commit via
+   PR #24, so the fast-forward must account for it. Do **not** force-push over
+   the existing 2.0 commits; they are public and may have been cloned.
+   **Confirm with Rachel that GitHub is the intended destination before pushing;
+   see "Two Destinations" at the top of this file.**
+1b. **The GitLab side is already part-done.** `audit/metrics-reconciliation` was
+   pushed to `pppl` on 2026-08-02 and built cleanly (pipeline 303085, image
+   `rkremen/talestogo:audit-metrics-reconciliation`). The live site was NOT
+   touched, because the deploy job only runs on the default branch. The cutover
+   still to do: back up the PPPL Postgres, point the Portainer stack at that
+   branch image tag to test 2.0 on real infrastructure, and only then decide
+   about GitLab `main`.
+2. **Investigations follow-ups, both deliberately deferred:** per-brand
+   thresholds (today they are deployment-wide, and `threshold_for` is the single
+   place a per-brand setting would land), and batch-mode auto-triggers (only
+   month-over-month fires automatically; a single batch is too noisy to raise an
+   investigation over).
+3. **No grounded round-trip has been exercised.** Every investigation test stubs
+   the model. The first real run on a deployment with live keys is worth
+   watching, particularly the Google and OpenAI tool-use adapters, which were
+   verified against their SDK surfaces but not against the live APIs.
+
+### Earlier: session 3 handover
 
 Web search grounding + latest models merged to `main` (PR #15). PNNL/labs update email drafted, awaiting recipients + send from Rachel's work account.
 

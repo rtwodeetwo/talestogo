@@ -11,7 +11,7 @@ import datetime
 import json
 from datetime import timedelta
 from .. import models
-from . import metrics
+from . import metrics, metrics_core, metrics_query
 
 
 class AnalyticsCache:
@@ -41,6 +41,7 @@ class AnalyticsCache:
         self.batch_id = batch_id
         self._cache: Dict[str, Any] = {}
         self._calculated = False
+        self._resolved_population = None
 
         # Date filtering with configurable default window
         if date_to is None:
@@ -53,6 +54,25 @@ class AnalyticsCache:
             self.date_from = self.date_to - timedelta(days=default_days)
         else:
             self.date_from = date_from
+
+    def _population(self):
+        """Resolve this cache's scope as a canonical MetricPopulation.
+
+        Memoized: several calculations need it and resolving is a query.
+        """
+        if getattr(self, '_resolved_population', None) is None:
+            if self.batch_id is not None:
+                scope = metrics_query.MetricScope.for_batch(
+                    self.user_id, self.brand_id, self.batch_id)
+            else:
+                scope = metrics_query.MetricScope(
+                    owner_user_id=self.user_id,
+                    brand_id=self.brand_id,
+                    start=self.date_from,
+                    end=self.date_to,
+                )
+            self._resolved_population = metrics_query.resolve(self.db, scope)
+        return self._resolved_population
 
     def _apply_filters(self, query, include_brand_in_query: bool = True):
         """
@@ -75,7 +95,8 @@ class AnalyticsCache:
             if self.date_from:
                 query = query.filter(models.Response.timestamp >= self.date_from)
             if self.date_to:
-                query = query.filter(models.Response.timestamp <= self.date_to)
+                # Half-open [date_from, date_to).
+                query = query.filter(models.Response.timestamp < self.date_to)
 
         # Only try to filter by brand_in_query if Query table has data
         if not include_brand_in_query:
@@ -180,61 +201,55 @@ class AnalyticsCache:
         self._cache['mention_count'] = mentions
 
     def _calculate_sentiment_metrics(self):
-        """Calculate sentiment metrics (includes all responses)."""
-        # Positive sentiment count
-        positive_count = self._apply_filters(
-            self.db.query(func.count(models.Response.id)).filter(
-                and_(
-                    models.Response.brand_mentioned == 'Yes',
-                    models.Response.sentiment.in_(['Very Positive', 'Positive'])
-                )
-            ),
-            include_brand_in_query=True
-        ).scalar() or 0
+        """Sentiment metrics, from the canonical definition.
 
-        # Sentiment breakdown (only for direct mentions)
-        sentiment_breakdown = self._apply_filters(
-            self.db.query(
-                models.Response.sentiment,
-                func.count(models.Response.id).label('count')
-            ).filter(
-                models.Response.brand_mentioned == 'Yes'
-            ).group_by(models.Response.sentiment),
-            include_brand_in_query=True
-        ).all()
+        The rate previously divided a Yes-only numerator by a Yes+Indirect
+        denominator (total_mentions_all), which systematically understated it:
+        Indirect mentions carry no sentiment, so they inflated the denominator
+        without ever contributing to the numerator. On the golden fixture that
+        read 41.9% where the true figure is 65.0%.
 
-        total_mentions = self._cache['total_mentions_all']
+        This path feeds the month-over-month and quarter-over-quarter dashboard
+        modes, so leaving it would have meant the same brand and period showing
+        one sentiment in batch mode and another in period mode.
+        """
+        population = self._population()
 
-        self._cache['positive_sentiment_rate'] = (positive_count / total_mentions * 100) if total_mentions > 0 else 0.0
-        self._cache['positive_sentiment_count'] = positive_count
+        positive = metrics_core.positive_sentiment_rate(population)
+        distribution = metrics_core.sentiment_distribution(population)
+
+        self._cache['positive_sentiment_rate'] = (
+            positive.value if positive.value is not None else 0.0)
+        self._cache['positive_sentiment_count'] = int(positive.numerator)
         self._cache['sentiment_breakdown'] = {
-            sentiment: count for sentiment, count in sentiment_breakdown if sentiment
+            label: int(value.numerator)
+            for label, value in distribution.items()
+            if value.numerator
         }
 
     def _calculate_descriptor_metrics(self):
-        """
-        Calculate descriptor match metrics (includes all responses).
+        """Descriptor match metrics, from the canonical definition.
 
-        Optimized to reduce memory usage by:
-        1. Getting unique descriptor values from DB instead of loading all responses
-        2. Using set operations for faster matching
-        3. Only loading descriptor text, not full response objects
-        """
-        # Get target descriptors
-        target_descriptors_query = self.db.query(models.TargetDescriptor).filter(
-            models.TargetDescriptor.user_id == self.user_id,
-            models.TargetDescriptor.is_target == True
-        )
-        if self.brand_id:
-            target_descriptors_query = target_descriptors_query.filter(
-                models.TargetDescriptor.brand_id == self.brand_id
-            )
+        Two corrections over the previous implementation:
 
-        target_descriptors = target_descriptors_query.all()
-        total_target_descriptors = len(target_descriptors)
+        * Matching was bidirectional substring, so a target of "AI" matched a
+          response descriptor of "explainable AI" and vice versa. The canonical
+          rule is case-insensitive exact on comma-split tokens.
+        * Per-descriptor counts were keyed on the raw string, so
+          "high-temperature plasma" and "High-Temperature Plasma" occupied
+          separate rows. They are case-folded now.
+
+        The old per-descriptor match_rate could also exceed 100%: it summed
+        response_count once per matching target, double-counting a response that
+        matched two targets. It is now the share of mentioning answers that used
+        the descriptor.
+        """
+        population = self._population()
+
+        match = metrics_core.descriptor_match_rate(population)
+        total_target_descriptors = int(match.denominator)
 
         if total_target_descriptors == 0:
-            # No target descriptors configured
             self._cache['descriptor_match_rate'] = 0.0
             self._cache['matched_descriptors_count'] = 0
             self._cache['total_target_descriptors'] = 0
@@ -242,166 +257,78 @@ class AnalyticsCache:
             self._cache['descriptor_counts'] = {}
             return
 
-        # Build lowercase target descriptor set for matching
-        target_desc_lower = {td.descriptor.lower(): td.descriptor for td in target_descriptors}
+        descriptor_counts = metrics_core.descriptor_frequency(population)
+        mentioning = sum(1 for row in population.analyzed_rows() if row.is_mentioned)
 
-        # OPTIMIZED: Get only descriptor column + count of responses (not full response objects)
-        # This significantly reduces memory usage
-        responses_count_query = self._apply_filters(
-            self.db.query(func.count(models.Response.id)).filter(
-                models.Response.brand_mentioned.in_(['Yes', 'Indirect'])
-            ),
-            include_brand_in_query=True
-        )
-        total_mention_responses = responses_count_query.scalar() or 0
+        top_descriptors = [
+            {
+                'descriptor': name,
+                'count': count,
+                'match_rate': round(count / mentioning * 100, 1) if mentioning else 0,
+            }
+            for name, count in list(descriptor_counts.items())[:10]
+        ]
 
-        # Get unique descriptors and their counts using GROUP BY
-        descriptor_aggregation = self._apply_filters(
-            self.db.query(
-                models.Response.descriptors,
-                func.count(models.Response.id).label('response_count')
-            ).filter(
-                models.Response.brand_mentioned.in_(['Yes', 'Indirect']),
-                models.Response.descriptors.isnot(None),
-                models.Response.descriptors != ''
-            ).group_by(models.Response.descriptors),
-            include_brand_in_query=True
-        ).all()
-
-        # Count descriptor matches using set operations
-        matched_descriptors = set()
-        descriptor_counts: Dict[str, int] = {}
-
-        for descriptor_str, response_count in descriptor_aggregation:
-            if descriptor_str:
-                # Parse comma-separated descriptors
-                response_descriptors = [d.strip().lower() for d in descriptor_str.split(',')]
-
-                # Check which target descriptors match this descriptor string
-                for target_lower, target_original in target_desc_lower.items():
-                    # Substring matching (both directions)
-                    if any(target_lower in resp_desc or resp_desc in target_lower
-                           for resp_desc in response_descriptors):
-                        matched_descriptors.add(target_original)
-                        descriptor_counts[target_original] = descriptor_counts.get(
-                            target_original, 0
-                        ) + response_count
-
-        # Calculate match rate
-        descriptor_match_rate = (len(matched_descriptors) / total_target_descriptors * 100) if total_target_descriptors > 0 else 0.0
-
-        # Top descriptors
-        top_descriptors = sorted(
-            [{'descriptor': k, 'count': v, 'match_rate': (v / total_mention_responses * 100) if total_mention_responses > 0 else 0}
-             for k, v in descriptor_counts.items()],
-            key=lambda x: x['count'],
-            reverse=True
-        )[:10]
-
-        self._cache['descriptor_match_rate'] = descriptor_match_rate
-        self._cache['matched_descriptors_count'] = len(matched_descriptors)
+        self._cache['descriptor_match_rate'] = match.value if match.value is not None else 0.0
+        self._cache['matched_descriptors_count'] = int(match.numerator)
         self._cache['total_target_descriptors'] = total_target_descriptors
         self._cache['top_descriptors'] = top_descriptors
         self._cache['descriptor_counts'] = descriptor_counts
 
     def _calculate_share_of_voice(self):
+        """Share of voice, from the canonical definition.
+
+        Delegates to metrics_core so the Share of Voice page and the Dashboard
+        tile cannot disagree. The previous implementation counted competitors
+        only inside answers where the brand was already mentioned, then labelled
+        the result as a share of the whole corpus: a competitor named in an
+        answer the brand never appeared in was invisible, which structurally
+        inflated the brand's share. On the golden fixture that read 75.9% where
+        the true figure is 55.0%. It also skipped organization-name
+        normalization, so the same competitor could appear as several rows here
+        while being merged everywhere else.
         """
-        Calculate share of voice metrics (excludes brand_in_query).
+        population = self._population()
+        brand_name = population.brand_name or "Your Brand"
 
-        Optimized to reduce memory usage by:
-        1. Using aggregation queries where possible
-        2. Loading only necessary columns (competitors, brand_position)
-        3. Avoiding loading full response text
-        """
-        # Get brand name
-        brand = self.db.query(models.BrandInfo).filter(
-            models.BrandInfo.user_id == self.user_id
-        )
-        if self.brand_id:
-            brand = brand.filter(models.BrandInfo.id == self.brand_id)
-        brand = brand.first()
+        brand_share, competitor_shares = metrics_core.share_of_voice(population)
+        leadership = metrics_core.leadership_visibility(population)
+        positions = metrics_core.positioning_distribution(population)
 
-        brand_name = brand.brand_name if brand else "Your Brand"
+        sov_list = [{
+            'organization': brand_name,
+            'mention_count': int(brand_share.numerator),
+            'total_mentions': int(brand_share.numerator),
+            'percentage': brand_share.value if brand_share.value is not None else 0.0,
+            'share_of_voice': brand_share.value if brand_share.value is not None else 0.0,
+            'leadership_visibility': leadership.value if leadership.value is not None else 0.0,
+            'leader_count': int(positions['Leader'].numerator),
+            # Top 3 is reported with Featured here because the page has no
+            # separate column for it; it is stored and charted separately.
+            'featured_count': int(positions['Featured'].numerator
+                                  + positions['Top 3'].numerator),
+            'is_brand': True,
+        }]
 
-        # OPTIMIZED: Get only needed columns instead of full response objects
-        responses_with_mentions = self._apply_filters(
-            self.db.query(
-                models.Response.id,
-                models.Response.competitors,
-                models.Response.brand_position
-            ).filter(
-                models.Response.brand_mentioned.in_(['Yes', 'Indirect'])
-            ),
-            include_brand_in_query=False
-        ).all()
-
-        # Count mentions per organization AND track positioning
-        org_counts: Dict[str, int] = {brand_name: len(responses_with_mentions)}
-        org_leader_counts: Dict[str, int] = {}
-        org_featured_counts: Dict[str, int] = {}
-
-        # Count brand's leadership positions (Featured includes both Featured and Top 3)
-        brand_leader = sum(1 for r in responses_with_mentions if r.brand_position == 'Leader')
-        brand_featured = sum(1 for r in responses_with_mentions if r.brand_position in ['Featured', 'Top 3'])
-        org_leader_counts[brand_name] = brand_leader
-        org_featured_counts[brand_name] = brand_featured
-
-        # Parse competitors from responses
-        for response in responses_with_mentions:
-            if response.competitors:
-                competitors = [c.strip() for c in response.competitors.split(',')]
-                for competitor in competitors:
-                    if competitor and competitor != brand_name:
-                        org_counts[competitor] = org_counts.get(competitor, 0) + 1
-                        # Note: We can't track competitor positioning from current data structure
-                        # They're just mentioned, not positioned
-                        if competitor not in org_leader_counts:
-                            org_leader_counts[competitor] = 0
-                            org_featured_counts[competitor] = 0
-
-        # Calculate total mentions (brand + competitors)
-        total_mentions = sum(org_counts.values())
-
-        # Build share of voice list with leadership visibility
-        sov_list = []
-        for org, count in org_counts.items():
-            is_brand = (org == brand_name)
-            leader_count = org_leader_counts.get(org, 0)
-            featured_count = org_featured_counts.get(org, 0)
-
-            # Leadership visibility: only calculate for brand using centralized function
-            if is_brand:
-                # Get all responses and queries for centralized calculation
-                all_responses_obj = self._apply_filters(
-                    self.db.query(models.Response),
-                    include_brand_in_query=True
-                ).all()
-                all_queries_obj = self.db.query(models.Query).filter(
-                    models.Query.brand_id == self.brand_id
-                ).all()
-                leadership_visibility = metrics.calculate_leadership_visibility(all_responses_obj, all_queries_obj)
-            else:
-                # Not tracked for competitors
-                leadership_visibility = 0.0
-
+        for name, value in competitor_shares.items():
+            if name == brand_name:
+                continue
             sov_list.append({
-                'organization': org,
-                'mention_count': count,
-                'total_mentions': count,  # Alias for frontend compatibility
-                'percentage': (count / total_mentions * 100) if total_mentions > 0 else 0.0,
-                'share_of_voice': (count / total_mentions * 100) if total_mentions > 0 else 0.0,  # Alias
-                'leadership_visibility': leadership_visibility,
-                'leader_count': leader_count,
-                'featured_count': featured_count,
-                'is_brand': is_brand
+                'organization': name,
+                'mention_count': int(value.numerator),
+                'total_mentions': int(value.numerator),
+                'percentage': value.value if value.value is not None else 0.0,
+                'share_of_voice': value.value if value.value is not None else 0.0,
+                # Competitor positioning is not captured during analysis.
+                'leadership_visibility': 0.0,
+                'leader_count': 0,
+                'featured_count': 0,
+                'is_brand': False,
             })
 
         sov_list.sort(key=lambda x: x['percentage'], reverse=True)
 
-        # Brand's share of voice
-        brand_sov = next((item['percentage'] for item in sov_list if item['organization'] == brand_name), 0.0)
-
-        self._cache['share_of_voice'] = brand_sov
+        self._cache['share_of_voice'] = brand_share.value if brand_share.value is not None else 0.0
         self._cache['share_of_voice_breakdown'] = sov_list
 
     def _calculate_positioning_breakdown(self):

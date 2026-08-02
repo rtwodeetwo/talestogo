@@ -152,6 +152,40 @@ def bulk_replace_competitor(
     return {"updated_count": updated_count, "old_name": old_name, "new_name": new_name}
 
 
+# Excel caps a single cell at 32,767 characters. openpyxl slices silently at that
+# length (openpyxl/cell/cell.py), so a long grounded answer loses its tail with no
+# error and no marker in the file. We truncate deliberately instead, leaving a
+# visible note that points at the CSV export, which has no such limit.
+EXCEL_CELL_LIMIT = 32767
+_TRUNCATION_NOTE = "  [truncated at {limit} characters, the Excel cell limit; use the CSV export for the full text]"
+
+
+def _excel_safe(value: Optional[str]) -> str:
+    """Make a response body safe to put in a worksheet cell.
+
+    Two failure modes, both of which currently break the export:
+
+    1. Control characters. openpyxl raises IllegalCharacterError when the value is
+       assigned, before the workbook is ever saved. Because the export is
+       all-or-nothing, one stray byte anywhere in a brand's data made the whole
+       spreadsheet unavailable. LLM answers do occasionally carry stray control
+       bytes, so they are stripped here rather than allowed to fail the request.
+    2. Length. See EXCEL_CELL_LIMIT above.
+    """
+    if not value:
+        return ''
+    # Strip the characters in openpyxl's ILLEGAL_CHARACTERS_RE, keeping tab,
+    # newline and carriage return, which Excel accepts.
+    cleaned = ''.join(
+        ch for ch in value
+        if ch in '\t\n\r' or ord(ch) >= 32
+    )
+    if len(cleaned) > EXCEL_CELL_LIMIT:
+        note = _TRUNCATION_NOTE.format(limit=EXCEL_CELL_LIMIT)
+        cleaned = cleaned[:EXCEL_CELL_LIMIT - len(note)] + note
+    return cleaned
+
+
 @router.get("/export/excel")
 def export_responses_to_excel(
     current_user: models.User = Depends(get_current_user),
@@ -162,14 +196,31 @@ def export_responses_to_excel(
     from openpyxl import Workbook
     from openpyxl.styles import Font, Alignment, PatternFill
 
-    # Get all responses for the active brand
-    responses = crud.get_responses(db, user_id=current_user.id, brand_id=brand_id, skip=0, limit=10000)
+    # Resolve the brand OWNER, not the requesting user. Every other read path on
+    # this router does the same (see read_responses); using current_user.id here
+    # meant a user viewing a shared brand saw the table on screen but got a 404
+    # from the export button.
+    owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+
+    # Page through rather than capping at a fixed limit. The previous limit=10000
+    # silently dropped every row beyond it, so a large brand's spreadsheet was
+    # quietly incomplete.
+    responses = []
+    page_size = 5000
+    while True:
+        page = crud.get_responses(
+            db, user_id=owner_user_id, brand_id=brand_id,
+            skip=len(responses), limit=page_size,
+        )
+        responses.extend(page)
+        if len(page) < page_size:
+            break
 
     if not responses:
         raise HTTPException(status_code=404, detail="No responses found for export")
 
     # Get brand name for filename
-    brand = crud.get_active_brand(db, user_id=current_user.id) if brand_id else None
+    brand = crud.get_brand_by_id(db, brand_id, owner_user_id) if brand_id else None
     brand_name = brand.brand_name if brand else "Unknown"
 
     # Create workbook and worksheet
@@ -180,11 +231,18 @@ def export_responses_to_excel(
     # Define headers
     headers = [
         "Response ID",
+        # Batch ID is what the dashboard's batch selector scopes by. Without it
+        # there is no way to reconcile a row in this spreadsheet against a number
+        # on screen.
+        "Batch ID",
         "Query ID",
+        # The exported row previously identified its question only by id, so you
+        # could not tell what "Q014" had actually asked.
+        "Query Text",
         "Platform",
         "Response Text",
-        "Collected At",
-        "Analyzed At",
+        "Collected At (UTC)",
+        "Analyzed At (UTC)",
         "Brand Mentioned",
         "Brand Position",
         "Sentiment",
@@ -208,18 +266,20 @@ def export_responses_to_excel(
     # Add data rows
     for row_num, response in enumerate(responses, 2):
         ws.cell(row=row_num, column=1).value = response.id
-        ws.cell(row=row_num, column=2).value = response.query_id
-        ws.cell(row=row_num, column=3).value = response.platform
-        ws.cell(row=row_num, column=4).value = response.response_text
-        ws.cell(row=row_num, column=5).value = response.timestamp.strftime('%Y-%m-%d %H:%M:%S') if response.timestamp else ''
-        ws.cell(row=row_num, column=6).value = response.analyzed_at.strftime('%Y-%m-%d %H:%M:%S') if response.analyzed_at else ''
-        ws.cell(row=row_num, column=7).value = response.brand_mentioned or ''
-        ws.cell(row=row_num, column=8).value = response.brand_position or ''
-        ws.cell(row=row_num, column=9).value = response.sentiment or ''
-        ws.cell(row=row_num, column=10).value = response.descriptors or ''
-        ws.cell(row=row_num, column=11).value = response.competitors or ''
-        ws.cell(row=row_num, column=12).value = response.sources or ''
-        ws.cell(row=row_num, column=13).value = response.notes or ''
+        ws.cell(row=row_num, column=2).value = response.batch_id
+        ws.cell(row=row_num, column=3).value = response.query_id
+        ws.cell(row=row_num, column=4).value = _excel_safe(response.query_text)
+        ws.cell(row=row_num, column=5).value = response.platform
+        ws.cell(row=row_num, column=6).value = _excel_safe(response.response_text)
+        ws.cell(row=row_num, column=7).value = response.timestamp.strftime('%Y-%m-%d %H:%M:%S') if response.timestamp else ''
+        ws.cell(row=row_num, column=8).value = response.analyzed_at.strftime('%Y-%m-%d %H:%M:%S') if response.analyzed_at else ''
+        ws.cell(row=row_num, column=9).value = _excel_safe(response.brand_mentioned)
+        ws.cell(row=row_num, column=10).value = _excel_safe(response.brand_position)
+        ws.cell(row=row_num, column=11).value = _excel_safe(response.sentiment)
+        ws.cell(row=row_num, column=12).value = _excel_safe(response.descriptors)
+        ws.cell(row=row_num, column=13).value = _excel_safe(response.competitors)
+        ws.cell(row=row_num, column=14).value = _excel_safe(response.sources)
+        ws.cell(row=row_num, column=15).value = _excel_safe(response.notes)
 
     # Auto-adjust column widths
     for col in ws.columns:

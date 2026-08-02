@@ -30,6 +30,9 @@ exclude = ["tests*"]
 # collection. The real suite lives entirely in tests/.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "reconciliation: cross-surface metric reconciliation. Known disagreements are marked xfail with the file:line responsible; that list is the migration checklist. Run with --runxfail to see the full matrix.",
+]
 
 # Bandit (Python SAST) configuration.
 #

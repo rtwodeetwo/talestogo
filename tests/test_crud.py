@@ -21,8 +21,8 @@ TEST_USER_ID = 1
 def test_db():
     """Create an in-memory test database for CRUD tests with a seeded test user."""
     import app.models  # noqa - ensure models are registered
-    test_db_uri = "sqlite:///file:crudtest?mode=memory&cache=shared"
-    engine = create_engine(test_db_uri, connect_args={"check_same_thread": False, "uri": True})
+    test_db_uri = "sqlite:///file:crudtest?mode=memory&cache=shared&uri=true"
+    engine = create_engine(test_db_uri, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

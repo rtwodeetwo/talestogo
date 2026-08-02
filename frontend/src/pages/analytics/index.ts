@@ -13,6 +13,7 @@
 export { default as BrandMentions } from './BrandMentions';
 export { default as CompetitorThreats } from './CompetitorThreats';
 export { default as DescriptorAnalysis } from './DescriptorAnalysis';
+export { default as Investigations } from './Investigations';
 export { default as PositioningAnalysis } from './PositioningAnalysis';
 export { default as SentimentAnalysis } from './SentimentAnalysis';
 export { default as ShareOfVoice } from './ShareOfVoice';

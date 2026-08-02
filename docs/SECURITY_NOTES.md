@@ -49,6 +49,62 @@ suppressions behind it are deliberately narrow:
 If you add a suppression, write down why next to it. If the reason is "it is
 probably fine", that is not a suppression, that is an unfinished investigation.
 
+### "Found something" and "could not look" are reported separately
+
+The script distinguishes `FINDINGS:` from `COULD NOT RUN:`, and says which
+happened in its summary. Both fail the run, but they mean opposite things: a
+finding is work to do, an error is a gate that is not guarding anything. Merging
+them into one FAIL is how a security check gets ignored, because everyone learns
+that red does not necessarily mean a problem.
+
+This is not hypothetical. Semgrep fetches its rule packs over HTTPS at the start
+of every scan, and on a network with a TLS-intercepting proxy that fetch dies
+with `SSLCertVerificationError`. Semgrep then exits 2 having scanned nothing.
+The previous version of this script reported that as "semgrep reported findings
+in app/", which is exactly backwards.
+
+### Running semgrep behind a TLS-intercepting proxy
+
+`curl https://semgrep.dev/...` returns 200 while semgrep raises, because curl
+trusts the interception certificate through the OS trust store and Python's
+`requests` uses certifi's bundle, which does not contain it. Note the proxy
+environment variables are a red herring: the interception is transparent, so
+unsetting `HTTPS_PROXY` changes nothing.
+
+Two remedies. Either works; they trade differently.
+
+**1. Trust the presented chain, and keep using the registry.** Rules stay
+current, but the bundle is specific to the machine and the network.
+
+```bash
+echo | openssl s_client -connect semgrep.dev:443 -servername semgrep.dev -showcerts 2>/dev/null \
+  | awk '/BEGIN CERT/,/END CERT/' > /tmp/intercept-chain.pem
+cat "$(python3 -c 'import certifi;print(certifi.where())')" /tmp/intercept-chain.pem > /tmp/ca-bundle.pem
+REQUESTS_CA_BUNDLE=/tmp/ca-bundle.pem ./scripts/run_sast.sh
+```
+
+Take the chain **off the wire** as above rather than pulling a certificate out
+of the system keychain by name. On the PPPL network the keychain holds a Zscaler
+root that OpenSSL 3 rejects outright ("Basic Constraints of CA cert not marked
+critical"), and appending that one produces a different verification error that
+looks like the same problem and is not.
+
+**2. Fetch the rules with curl and scan against files.** Slightly stale rules if
+you forget to refresh, but it is machine-independent and it works on a
+deployment that cannot reach `semgrep.dev` at all.
+
+```bash
+./scripts/fetch_semgrep_rules.sh
+SEMGREP_RULES_DIR=.semgrep-rules ./scripts/run_sast.sh
+```
+
+Rule ids gain a path prefix when rules are loaded from files, so a rule named in
+the script or in a `# nosemgrep:` comment needs both spellings, for example
+`python.sqlalchemy...avoid-sqlalchemy-text` and
+`semgrep-rules.python.sqlalchemy...avoid-sqlalchemy-text`. The downloaded rules
+are gitignored on purpose: the scan should use semgrep's current rules, not a
+frozen copy that quietly goes stale.
+
 Worth re-testing the suppressions occasionally by planting a vulnerability and
 confirming the scanners still fail. Last checked: a raw-SQL injection in
 `app/`, `shell=True`, `os.system()`, an AWS key and a PEM private key were all

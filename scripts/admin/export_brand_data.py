@@ -26,8 +26,8 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, inspect as sa_inspect, text
+from sqlalchemy.orm import defer, sessionmaker
 
 from app.models import (
     BrandInfo, Query, Response, Competitor, TargetDescriptor,
@@ -166,7 +166,41 @@ def export_brand_data(brand_name: str, output_file: str):
             })
 
         # Export responses (this is the big one)
-        responses = session.query(Response).filter(Response.brand_id == brand.id).all()
+        # This script is routinely pointed at an OLDER deployment's database in
+        # order to migrate out of it, so a column this codebase knows about may
+        # simply not be there. Asking for it anyway turns the whole export into
+        # an "column does not exist" error. Defer what is missing instead, and
+        # record the absence honestly as "unknown" rather than guessing a value.
+        source_columns = {
+            column["name"] for column in sa_inspect(engine).get_columns("responses")
+        }
+        has_grounded_column = "collected_grounded" in source_columns
+
+        # Some older deployments recorded the same fact under a different name.
+        # Reading it is much better than letting the importer infer grounding
+        # from a switch date: this is what was actually true per response, and a
+        # deployment's switch is rarely as clean as a single date implies.
+        legacy_grounded = {}
+        if not has_grounded_column and "web_search_enabled" in source_columns:
+            legacy_grounded = {
+                row[0]: row[1]
+                for row in session.execute(text(
+                    "SELECT id, web_search_enabled FROM responses "
+                    "WHERE brand_id = :brand_id"),  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text,semgrep-rules.python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - fixed statement, brand id is a bound parameter.
+                    {"brand_id": brand.id})
+            }
+            print(f"  Source records grounding as 'web_search_enabled'; carrying "
+                  f"{sum(1 for v in legacy_grounded.values() if v is not None)} "
+                  "recorded values across.")
+        elif not has_grounded_column:
+            print("  Note: source database records grounding nowhere; responses "
+                  "will export with grounding unknown. Use --grounded-from on "
+                  "import if the switch date is known.")
+
+        response_query = session.query(Response).filter(Response.brand_id == brand.id)
+        if not has_grounded_column:
+            response_query = response_query.options(defer(Response.collected_grounded))
+        responses = response_query.all()
         print(f"Exporting {len(responses)} responses...")
         for r in responses:
             export_data["responses"].append({
@@ -185,7 +219,13 @@ def export_brand_data(brand_name: str, output_file: str):
                 "sources": r.sources,
                 "campaign_period": r.campaign_period,
                 "notes": r.notes,
-                "analyzed_at": r.analyzed_at.isoformat() if r.analyzed_at else None
+                "analyzed_at": r.analyzed_at.isoformat() if r.analyzed_at else None,
+                # None means "not recorded", which the importer must not read as
+                # False. See --grounded-from in import_brand_data.py for how a
+                # known switch date is applied to rows that predate the column.
+                "collected_grounded": (
+                    r.collected_grounded if has_grounded_column
+                    else legacy_grounded.get(r.id)),
             })
 
         # Export reports

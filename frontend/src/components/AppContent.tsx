@@ -8,7 +8,7 @@ import Competitors from '../pages/manage/Competitors';
 import Descriptors from '../pages/manage/Descriptors';
 import BrandInfo from '../pages/manage/BrandInfo';
 import ManageBrands from '../pages/manage/ManageBrands';
-import ReportsPage from '../pages/ReportsPage';
+import ExportsPage from '../pages/ExportsPage';
 import CollectAndAnalyze from '../pages/CollectAndAnalyze';
 import Settings from '../pages/Settings';
 import UserManagement from '../pages/admin/UserManagement';
@@ -24,6 +24,7 @@ import ShareOfVoice from '../pages/analytics/ShareOfVoice';
 import BrandMentions from '../pages/analytics/BrandMentions';
 import DescriptorAnalysis from '../pages/analytics/DescriptorAnalysis';
 import CompetitorThreats from '../pages/analytics/CompetitorThreats';
+import Investigations from '../pages/analytics/Investigations';
 import HowTalesWorks from '../pages/HowTalesWorks';
 import Help from '../pages/Help';
 import Login from '../pages/auth/Login';
@@ -117,6 +118,17 @@ const AppRoutes: React.FC = () => {
             <ProtectedRoute>
               <Layout>
                 <CompetitorThreats />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/analytics/investigations"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Investigations />
               </Layout>
             </ProtectedRoute>
           }
@@ -232,11 +244,11 @@ const AppRoutes: React.FC = () => {
 
         {/* Reports Route */}
         <Route
-          path="/reports"
+          path="/exports"
           element={
             <ProtectedRoute>
               <Layout>
-                <ReportsPage />
+                <ExportsPage />
               </Layout>
             </ProtectedRoute>
           }

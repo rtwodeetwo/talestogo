@@ -1,8 +1,10 @@
 """
 Batch Analytics Caching Service
 
-Computes and caches analytics for collection batches to avoid
-reprocessing responses when generating reports or viewing trends.
+Materializes per-batch metrics so trend charts and reports do not reprocess
+every response. The numbers themselves come from metrics_core, so a stored row
+and a live computation agree by construction; this module only decides what to
+persist. See docs/METRIC_DEFINITIONS.md.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
@@ -10,7 +12,12 @@ from typing import Optional, Dict, Any
 import json
 import datetime
 from .. import models
-from .metrics import normalize_organization_name
+from . import metrics_core, metrics_query
+
+#: Bump when a stored column's definition changes, so a row written by an older
+#: implementation can be told apart from a recomputed one. Rows written before
+#: the August 2026 metric audit have this as NULL.
+METRICS_VERSION = "2026.08"
 
 
 def compute_batch_analytics(
@@ -41,159 +48,87 @@ def compute_batch_analytics(
     if not batch:
         return None
 
-    # Get all responses for this batch
-    responses = db.query(models.Response).filter(
-        models.Response.batch_id == batch_id,
-        models.Response.user_id == user_id,
-        models.Response.brand_id == brand_id
-    ).all()
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(user_id, brand_id, batch_id))
 
-    if not responses:
+    if not population.rows:
         return None
 
-    # Build a set of query_ids where brand_in_query=False (organic queries)
-    # This is used for Share of Voice calculation to match AnalyticsCache behavior
-    organic_query_ids = set()
-    queries = db.query(models.Query).filter(
-        models.Query.user_id == user_id,
-        models.Query.brand_id == brand_id,
-        models.Query.brand_in_query == False
-    ).all()
-    for q in queries:
-        organic_query_ids.add(q.query_id)
+    mention = metrics_core.mention_rate(population)
+    direct = metrics_core.direct_mention_rate(population)
+    positions = metrics_core.positioning_distribution(population)
+    sentiment = metrics_core.sentiment_distribution(population)
+    quality = metrics_core.data_quality(population)
 
-    # Filter to only organic responses (brand_in_query=False) for brand mention metrics
-    # This ensures we measure true organic brand visibility, not mentions when explicitly asked about the brand
-    organic_responses = [r for r in responses if r.query_id in organic_query_ids]
-    total_responses = len(organic_responses)
+    # total_responses is the metric denominator, not a row count for the batch.
+    # Rows outside it are reported in analyzed/unanalyzed/invalid rather than
+    # being folded into not_mentioned_count, which is what used to make a failed
+    # analysis pass look like a drop in brand visibility.
+    total_responses = int(mention.denominator)
 
-    # Initialize counters (all based on organic queries only)
-    mention_count = 0
-    leader_count = 0
-    featured_count = 0
-    listed_count = 0
-    not_mentioned_count = 0
+    def position(label: str) -> int:
+        return int(positions[label].numerator)
 
-    # Sentiment counters (organic responses where brand is mentioned)
-    very_positive_count = 0
-    positive_count = 0
-    neutral_count = 0
-    negative_count = 0
-    very_negative_count = 0
-    mixed_count = 0
+    def sentiment_count(label: str) -> int:
+        return int(sentiment[label].numerator)
 
-    # Share of voice data (only from organic queries)
-    sov_counts: Dict[str, int] = {}
+    # Competitor counts across ALL organic responses, not only those where the
+    # brand was already mentioned. The old restriction made a competitor named
+    # in an answer the brand never appeared in invisible, which inflated the
+    # brand's share of voice.
+    _, competitor_shares = metrics_core.share_of_voice(population)
+    sov_counts: Dict[str, int] = {
+        name: int(value.numerator) for name, value in competitor_shares.items()
+    }
 
-    # Descriptor usage
-    descriptor_counts: Dict[str, int] = {}
+    # Case-folded, so "high-temperature plasma" and "High-Temperature Plasma"
+    # stop occupying separate rows in every chart built from this data.
+    descriptor_counts: Dict[str, int] = metrics_core.descriptor_frequency(population)
 
-    # Process only organic responses
-    for response in organic_responses:
-        # Brand mentions and positioning
-        if response.brand_mentioned in ['Yes', 'Indirect']:
-            mention_count += 1
+    values = dict(
+        collection_date=batch.started_at,
+        total_responses=total_responses,
+        analyzed_count=quality['counted'],
+        unanalyzed_count=quality['unanalyzed_excluded'],
+        invalid_count=quality['invalid_enum_excluded'],
+        mention_count=int(mention.numerator),
+        direct_mention_count=int(direct.numerator),
+        mention_rate=mention.value if mention.value is not None else 0.0,
+        # The sentiment counts below divide by this, not by mention_count.
+        sentiment_base_count=int(sentiment['Very Positive'].denominator),
+        leader_count=position('Leader'),
+        top3_count=position('Top 3'),
+        featured_count=position('Featured'),
+        listed_count=position('Listed'),
+        not_mentioned_count=position('Not Mentioned'),
+        very_positive_count=sentiment_count('Very Positive'),
+        positive_count=sentiment_count('Positive'),
+        neutral_count=sentiment_count('Neutral'),
+        negative_count=sentiment_count('Negative'),
+        very_negative_count=sentiment_count('Very Negative'),
+        mixed_count=sentiment_count('Mixed'),
+        sov_data=json.dumps(sov_counts) if sov_counts else None,
+        descriptor_data=json.dumps(descriptor_counts) if descriptor_counts else None,
+        metrics_version=METRICS_VERSION,
+    )
 
-            # Count positioning
-            if response.brand_position == 'Leader':
-                leader_count += 1
-            elif response.brand_position == 'Featured':
-                featured_count += 1
-            elif response.brand_position == 'Listed':
-                listed_count += 1
-        else:
-            not_mentioned_count += 1
-
-        # Sentiment (only where brand is mentioned)
-        if response.brand_mentioned == 'Yes':
-            if response.sentiment == 'Very Positive':
-                very_positive_count += 1
-            elif response.sentiment == 'Positive':
-                positive_count += 1
-            elif response.sentiment == 'Neutral':
-                neutral_count += 1
-            elif response.sentiment == 'Negative':
-                negative_count += 1
-            elif response.sentiment == 'Very Negative':
-                very_negative_count += 1
-            elif response.sentiment == 'Mixed':
-                mixed_count += 1
-
-        # Share of voice - count competitor mentions from organic queries
-        # where brand is mentioned (Yes or Indirect)
-        # This matches AnalyticsCache._calculate_share_of_voice() behavior
-        is_brand_mentioned = response.brand_mentioned in ['Yes', 'Indirect']
-        if is_brand_mentioned and response.competitors:
-            competitor_names = [c.strip() for c in response.competitors.split(',') if c.strip()]
-            for comp in competitor_names:
-                normalized = normalize_organization_name(comp)
-                sov_counts[normalized] = sov_counts.get(normalized, 0) + 1
-
-        # Descriptor usage (only where brand is mentioned)
-        if response.brand_mentioned == 'Yes' and response.descriptors:
-            descriptors = [d.strip() for d in response.descriptors.split(',') if d.strip()]
-            for desc in descriptors:
-                descriptor_counts[desc] = descriptor_counts.get(desc, 0) + 1
-
-    # Calculate mention rate based on organic responses only
-    mention_rate = round((mention_count / total_responses * 100)) if total_responses > 0 else 0
-
-    # Check if analytics already exist for this batch
     existing = db.query(models.BatchAnalytics).filter(
         models.BatchAnalytics.batch_id == batch_id
     ).first()
 
     if existing:
-        # Update existing record
-        existing.collection_date = batch.started_at
-        existing.total_responses = total_responses
-        existing.mention_count = mention_count
-        existing.mention_rate = mention_rate
-        existing.leader_count = leader_count
-        existing.featured_count = featured_count
-        existing.listed_count = listed_count
-        existing.not_mentioned_count = not_mentioned_count
-        existing.very_positive_count = very_positive_count
-        existing.positive_count = positive_count
-        existing.neutral_count = neutral_count
-        existing.negative_count = negative_count
-        existing.very_negative_count = very_negative_count
-        existing.mixed_count = mixed_count
-        existing.sov_data = json.dumps(sov_counts) if sov_counts else None
-        existing.descriptor_data = json.dumps(descriptor_counts) if descriptor_counts else None
+        for field, value in values.items():
+            setattr(existing, field, value)
         existing.updated_at = datetime.datetime.utcnow()
-
-        db.commit()
-        db.refresh(existing)
-        return existing
+        analytics = existing
     else:
-        # Create new record
         analytics = models.BatchAnalytics(
-            user_id=user_id,
-            brand_id=brand_id,
-            batch_id=batch_id,
-            collection_date=batch.started_at,
-            total_responses=total_responses,
-            mention_count=mention_count,
-            mention_rate=mention_rate,
-            leader_count=leader_count,
-            featured_count=featured_count,
-            listed_count=listed_count,
-            not_mentioned_count=not_mentioned_count,
-            very_positive_count=very_positive_count,
-            positive_count=positive_count,
-            neutral_count=neutral_count,
-            negative_count=negative_count,
-            very_negative_count=very_negative_count,
-            mixed_count=mixed_count,
-            sov_data=json.dumps(sov_counts) if sov_counts else None,
-            descriptor_data=json.dumps(descriptor_counts) if descriptor_counts else None
-        )
-
+            user_id=user_id, brand_id=brand_id, batch_id=batch_id, **values)
         db.add(analytics)
-        db.commit()
-        db.refresh(analytics)
-        return analytics
+
+    db.commit()
+    db.refresh(analytics)
+    return analytics
 
 
 def get_or_compute_batch_analytics(
@@ -224,7 +159,11 @@ def get_or_compute_batch_analytics(
             models.BatchAnalytics.brand_id == brand_id
         ).first()
 
-        if existing:
+        # A row written by an older definition is not a cache hit. Without this
+        # check, rows computed before the August 2026 audit would be served
+        # indefinitely: they count unanalyzed responses as "not mentioned", drop
+        # 'Top 3' entirely, and divide sentiment by the wrong denominator.
+        if existing and existing.metrics_version == METRICS_VERSION:
             return existing
 
     # Compute and cache

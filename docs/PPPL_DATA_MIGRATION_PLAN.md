@@ -155,12 +155,81 @@ The script would:
 
 1. Deploy Tales using the deployment kit
 2. Create initial admin account
-3. Run import script:
+3. Run import script, recording when grounding was switched on (see below):
    ```bash
-   docker compose exec app python scripts/admin/import_brand_data.py --file pppl_data.json
+   docker compose exec app python scripts/admin/import_brand_data.py \
+     --file pppl_data.json --admin-email admin@pppl.gov --grounded-from 2026-07-01
    ```
 4. Verify data in the UI
 5. Configure LLM providers to continue collecting new data
+
+---
+
+## Grounding provenance, and why the import needs a date
+
+PPPL's history spans a change in how responses were collected. Before July 2026
+they were collected from the models' training data alone. From July 2026 they
+were collected with fresh web search grounding, which is what a person using
+ChatGPT, Claude or Gemini actually sees.
+
+Those are different measurements. Mention rate, sentiment and share of voice all
+move at the boundary, and the movement can easily be larger than anything the
+brand's reputation does in a year. A comparison that straddles the switch is not
+like for like.
+
+`Response.collected_grounded` records which it was: `True` grounded, `False`
+ungrounded, `NULL` not recorded. `NULL` is not `False`. A row that predates the
+column genuinely cannot say, and marking it ungrounded would assert a method
+nobody checked.
+
+New collections set it automatically, **including when a grounded call fails and
+falls back to an ungrounded one**, so a partly degraded batch is no longer
+indistinguishable from a clean one.
+
+For imported history, `--grounded-from YYYY-MM-DD` fills it in: responses on or
+after that date are marked grounded, earlier ones ungrounded. A value already
+recorded in the export always wins over the date, because it is a fact and the
+date is an inference about a whole deployment. Omit the flag and everything
+stays `NULL`, which is the honest default.
+
+**Prefer a recorded value over the date.** The export carries
+`collected_grounded` per response, and `--grounded-from` only fills rows where
+that is absent. Some older deployments record the same fact under the name
+`web_search_enabled`; the export reads that automatically, so for those no date
+is needed at all. The PPPL export produced on 2026-08-02 carried a recorded value
+for all 2044 responses, so `--grounded-from` was not needed.
+
+**Do NOT use the `sources` column to infer grounding.** An earlier version of
+this document suggested it, on the reasoning that grounded answers cite live
+URLs. Measured against the real PPPL data, that is wrong, and wrong in the
+unhelpful direction:
+
+| | cites sources | does not |
+|---|---|---|
+| grounded | 16 | 182 |
+| ungrounded | 262 | 1584 |
+
+Only 8% of grounded responses cite sources, against 14% of ungrounded ones. The
+`sources` field is populated by the analysis step from whatever the answer
+happened to mention, which tracks how the model chose to write far more than
+whether it searched. Using it as a proxy would have put the switch in the wrong
+place entirely.
+
+If nothing is recorded and no date is known, leave grounding as `NULL`. Unknown
+is a usable answer; a confidently wrong provenance is not.
+
+Once imported, the composition of each window appears in `data_quality.grounding`
+on every metric surface, in the `Grounded` column of the CSV exports, and in the
+evidence an investigation reads. The investigation agent is instructed to check
+it on both sides before attributing any movement to reputation, so a comparison
+across the switch is explained as a method change rather than written up as a
+reputation event.
+
+**Turn auto-investigations off for the first collection after the import**
+(`INVESTIGATIONS_AUTO_TRIGGER=false`). The first collection closes out a month
+and compares it against the one before, which for a July import means grounded
+against ungrounded. The investigation would be correct to flag it, but it is a
+known event rather than something to discover.
 
 ---
 

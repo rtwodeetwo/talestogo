@@ -1,10 +1,10 @@
 """
-Shared data pipeline service for collection, analysis, and report generation.
+Shared data pipeline service for response collection and analysis.
 Used by manual runs, scheduled tasks, and admin operations.
 
 WORKFLOW:
 - Collection: Query LLMs and analyze individual responses
-- Period Analysis: Generate aggregated reports for monthly/quarterly/annual periods
+- Period metrics are computed on demand from metrics_core; nothing is pre-rendered
 """
 import os
 import subprocess
@@ -24,129 +24,6 @@ def utcnow():
     return datetime.utcnow()
 
 
-async def run_period_report_only(
-    user_id: int,
-    brand_id: int,
-    period_type: str,
-    period_start: datetime,
-    period_end: datetime,
-    period_label: str,
-    triggered_by: str = "scheduled"
-) -> dict:
-    """
-    Generate a report for a specific time period (report-only, no analysis).
-
-    This function generates a report aggregating already-analyzed data within
-    the specified period. It does NOT run analysis or data collection.
-
-    Args:
-        user_id: ID of the user
-        brand_id: ID of the brand
-        period_type: 'monthly', 'quarterly', or 'annual'
-        period_start: Start of the report period
-        period_end: End of the report period
-        period_label: Display label for the period (e.g., "Q1 2026")
-        triggered_by: How this was triggered ("scheduled", "manual")
-
-    Returns:
-        dict with status information
-    """
-    db = SessionLocal()
-
-    try:
-        # Verify user and brand exist
-        user = db.query(models.User).filter_by(id=user_id).first()
-        if not user:
-            return {"success": False, "error": f"User {user_id} not found"}
-
-        brand = db.query(models.BrandInfo).filter_by(id=brand_id).first()
-        if not brand:
-            return {"success": False, "error": f"Brand {brand_id} not found"}
-
-        # Get the brand owner's user_id (for shared brands)
-        data_owner_user_id = brand.user_id
-
-        # Check for analyzed responses in the period
-        response_count = db.query(models.Response).filter(
-            models.Response.user_id == data_owner_user_id,
-            models.Response.brand_id == brand_id,
-            models.Response.timestamp >= period_start,
-            models.Response.timestamp <= period_end,
-            models.Response.analyzed_at.isnot(None)
-        ).count()
-
-        if response_count == 0:
-            return {"success": False, "error": f"No analyzed responses found for {period_label}"}
-
-        brand_name = brand.brand_name
-
-    finally:
-        db.close()
-
-    # Run report generation in background
-    def generate_period_report():
-        """Generate report for the specified period."""
-        db_thread = SessionLocal()
-
-        try:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            env = os.environ.copy()
-            env['PYTHONPATH'] = project_root
-
-            # Run report generation script with period parameters
-            report_script = os.path.join(project_root, "scripts", "admin", "generate_report.py")
-            report_cmd = [
-                "python3", report_script,
-                "--user-id", str(data_owner_user_id),
-                "--brand-id", str(brand_id),
-                "--report-type", period_type,
-                "--period-start", period_start.isoformat(),
-                "--period-end", period_end.isoformat(),
-                "--period-label", period_label
-            ]
-
-            report_process = subprocess.Popen(
-                report_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env
-            )
-
-            # Wait for report generation (timeout after 60 minutes)
-            report_stdout, report_stderr = report_process.communicate(timeout=3600)
-
-            if report_process.returncode != 0:
-                print(f"{period_type} report generation failed: {report_stderr}")
-                return False
-
-            print(f"{period_type} report generated successfully for {period_label}")
-            return True
-
-        except subprocess.TimeoutExpired as e:
-            print(f"{period_type} report generation timed out: {e}")
-            return False
-        except Exception as e:
-            print(f"Error generating {period_type} report: {e}")
-            return False
-        finally:
-            db_thread.close()
-
-    # Run in thread and wait for completion
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(generate_period_report)
-        success = future.result(timeout=3700)  # Slightly longer than subprocess timeout
-
-    return {
-        "success": success,
-        "message": f"{period_type.capitalize()} report generated for {period_label}" if success else f"Failed to generate {period_type} report",
-        "period_type": period_type,
-        "period_label": period_label,
-        "triggered_by": triggered_by
-    }
-
-
 def run_analysis_only(
     user_id: int,
     brand_id: int,
@@ -154,7 +31,7 @@ def run_analysis_only(
     triggered_by: str = "scheduled"
 ) -> dict:
     """
-    Run ONLY response analysis (no collection, no report, no email).
+    Run ONLY response analysis (no collection, no email).
 
     This is used by weekly scheduled runs to analyze newly collected responses.
 
@@ -266,6 +143,12 @@ def run_analysis_only(
             except Exception as e:
                 print(f"Warning: Failed to recompute batch analytics: {e}")
 
+            # Fresh analysis may have closed out a period. check_after_collection
+            # cannot raise, so a collection is never reported as failed because
+            # the follow-up investigation could not start.
+            from app.services.investigation.triggers import check_after_collection
+            check_after_collection(db, data_owner_user_id, brand_id)
+
             return {
                 "success": True,
                 "message": f"Analysis completed",
@@ -289,10 +172,10 @@ def run_collection_only(
     triggered_by: str = "scheduled"
 ) -> dict:
     """
-    Run ONLY data collection (no analysis, no report, no email).
+    Run ONLY data collection (no analysis, no email).
 
     This is used by the weekly scheduled collection.
-    For manual runs that need immediate analysis, use run_collection_analysis_report() instead.
+    For manual runs that need immediate analysis, use run_collection_and_analysis() instead.
 
     Args:
         user_id: ID of the user
@@ -411,13 +294,13 @@ def run_collection_only(
         db.close()
 
 
-def run_collection_analysis_report(
+def run_collection_and_analysis(
     user_id: int,
     brand_id: int,
     triggered_by: str = "manual"
 ) -> dict:
     """
-    Run the complete data pipeline: collection → analysis → report → email.
+    Run the complete data pipeline: collection → analysis → email.
 
     This is the single source of truth for the data collection workflow.
     Used by:
@@ -492,7 +375,7 @@ def run_collection_analysis_report(
 
     # Run the pipeline in a background thread
     def run_pipeline():
-        """Execute collection → analysis → report → email pipeline."""
+        """Execute collection → analysis → email pipeline."""
         db_thread = SessionLocal()
 
         try:
@@ -751,30 +634,15 @@ def run_collection_analysis_report(
                 print(f"Warning: Failed to recompute batch analytics: {e}")
                 # Don't fail the pipeline if analytics recompute fails
 
-            # === STEP 3: REPORT GENERATION ===
-            report_script = os.path.join(project_root, "scripts", "admin", "generate_report.py")
-            report_cmd = [
-                "python3", report_script,
-                "--user-id", str(data_owner_user_id),
-                "--brand-id", str(brand_id)
-            ]
+            # === STEP 2.6: AUTO-TRIGGER AN INVESTIGATION IF ANYTHING MOVED ===
+            # The first batch of a new month is what closes out the previous
+            # one, so this is where a month-over-month trigger fires. It cannot
+            # raise: a successful collection must not be reported as failed
+            # because the follow-up analysis of it could not start.
+            from app.services.investigation.triggers import check_after_collection
+            check_after_collection(db_thread, data_owner_user_id, brand_id)
 
-            report_process = subprocess.Popen(
-                report_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env
-            )
-
-            # Wait for report generation
-            report_stdout, report_stderr = report_process.communicate(timeout=3600)
-
-            report_generated = report_process.returncode == 0
-            if not report_generated:
-                print(f"Report generation failed: {report_stderr}")
-
-            # === STEP 4: SEND COMPLETION EMAIL ===
+            # === STEP 3: SEND COMPLETION EMAIL ===
             user_obj = db_thread.query(models.User).filter_by(id=user_id).first()
             brand_obj = db_thread.query(models.BrandInfo).filter_by(id=brand_id).first()
 
@@ -792,31 +660,18 @@ def run_collection_analysis_report(
             admin_email = get_admin_email(db_thread)
             contact_line = f"Questions? Reach out to {admin_email}." if admin_email else ""
 
-            # Email content depends on whether report was generated
-            if report_generated:
-                subject = f'Your {brand_obj.brand_name} Report is Ready'
-                body = f"""Hi {user_obj.full_name or user_obj.email},
+            subject = f'Your {brand_obj.brand_name} Data Collection is Complete'
+            body = f"""Hi {user_obj.full_name or user_obj.email},
 
-Great news! Your AI reputation analysis for {brand_obj.brand_name} is complete.
+Your AI reputation data collection for {brand_obj.brand_name} is complete.
 
-We've collected and analyzed {responses_collected} responses from ChatGPT, Claude, Gemini, and Perplexity. Your fresh insights are waiting for you at {site_url}/analytics.
+We collected and analyzed {responses_collected} responses from ChatGPT, Claude,
+Gemini and Perplexity. Your dashboard has been updated at {site_url}/analytics.
 
-Want to see the full story? Check out your detailed report at {site_url}/reports.
+To work with the underlying data, download the spreadsheet for this period from
+{site_url}/exports.
 
 {contact_line}
-
-Best regards,
-The {site_name} Team"""
-            else:
-                subject = f'{brand_obj.brand_name} Data Collection Complete'
-                contact_note = f", or contact {admin_email} if the issue persists" if admin_email else ""
-                body = f"""Hi {user_obj.full_name or user_obj.email},
-
-Your data collection for {brand_obj.brand_name} is complete.
-
-We've collected and analyzed {responses_collected} responses from ChatGPT, Claude, Gemini, and Perplexity. Your analytics dashboard has been updated at {site_url}/analytics.
-
-Note: There was an issue generating the detailed report. Please try generating a new report from the Reports page{contact_note}.
 
 Best regards,
 The {site_name} Team"""
@@ -881,8 +736,3 @@ The {site_name} Team"""
         "task_id": task_id,
         "triggered_by": triggered_by
     }
-
-
-# Backward-compatible alias for run_period_report_only
-# (was previously called run_period_analysis)
-run_period_analysis = run_period_report_only
