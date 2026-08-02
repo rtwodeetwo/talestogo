@@ -192,29 +192,31 @@ recorded in the export always wins over the date, because it is a fact and the
 date is an inference about a whole deployment. Omit the flag and everything
 stays `NULL`, which is the honest default.
 
-**Confirm the date from the data before using it.** The analysis step extracts
-cited URLs into the `sources` column, and grounded answers cite live sources
-where ungrounded ones rarely do. The boundary is visible in the export itself:
+**Prefer a recorded value over the date.** The export carries
+`collected_grounded` per response, and `--grounded-from` only fills rows where
+that is absent. Some older deployments record the same fact under the name
+`web_search_enabled`; the export reads that automatically, so for those no date
+is needed at all. The PPPL export produced on 2026-08-02 carried a recorded value
+for all 2044 responses, so `--grounded-from` was not needed.
 
-```bash
-python - <<'PY'
-import json, collections
-data = json.load(open("pppl_data.json"))
-by_month = collections.Counter()
-with_sources = collections.Counter()
-for r in data["responses"]:
-    if not r.get("timestamp"):
-        continue
-    month = r["timestamp"][:7]
-    by_month[month] += 1
-    if (r.get("sources") or "").strip():
-        with_sources[month] += 1
-for month in sorted(by_month):
-    print(month, f"{with_sources[month]}/{by_month[month]} cite sources")
-PY
-```
+**Do NOT use the `sources` column to infer grounding.** An earlier version of
+this document suggested it, on the reasoning that grounded answers cite live
+URLs. Measured against the real PPPL data, that is wrong, and wrong in the
+unhelpful direction:
 
-If the jump lands mid-July rather than on the 1st, pass the real date.
+| | cites sources | does not |
+|---|---|---|
+| grounded | 16 | 182 |
+| ungrounded | 262 | 1584 |
+
+Only 8% of grounded responses cite sources, against 14% of ungrounded ones. The
+`sources` field is populated by the analysis step from whatever the answer
+happened to mention, which tracks how the model chose to write far more than
+whether it searched. Using it as a proxy would have put the switch in the wrong
+place entirely.
+
+If nothing is recorded and no date is known, leave grounding as `NULL`. Unknown
+is a usable answer; a confidently wrong provenance is not.
 
 Once imported, the composition of each window appears in `data_quality.grounding`
 on every metric surface, in the `Grounded` column of the CSV exports, and in the
