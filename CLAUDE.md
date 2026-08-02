@@ -175,7 +175,95 @@ Merged via [PR #15](https://github.com/rtwodeetwo/talestogo/pull/15) (branch `fe
 
 **Follow-up:** drafted a PNNL/labs update email describing the grounding switch, the latest models, the DB opt-in, and the comparability caveat (not yet sent).
 
+### Session 4: 2026-08-01 — Metric audit, reports removal, investigations
+
+Branch `audit/metrics-reconciliation`, cut from `release/2.0`. **14 commits, not
+yet pushed.** All tests pass (284), backend imports at 170 routes, frontend
+builds.
+
+#### Why this happened
+
+Rachel had lost confidence in Tales' statistics after many rounds of changes. An
+audit found the same conceptual metric computed 4 to 9 different ways: 9 mention
+rates, 9 positive-sentiment rates, 4 share of voice, 6 positioning. On a
+controlled dataset the implementations spread by **29 percentage points** on
+mention rate. Surfaces that were meant to agree could not, by construction.
+
+Crucially, the gaps were largest where the data was messy (unanalyzed rows,
+branded queries, malformed values), which is exactly what real collection runs
+look like.
+
+#### What was built
+
+- **`app/services/metrics_core.py`** — one definition per metric, pure (no
+  Session, no ORM, no clock), every result carrying its numerator and
+  denominator. **This is now the only place a rate may be computed.**
+- **`app/services/metrics_query.py`** — the single population resolver.
+  `MetricScope` covers batch, month and quarter. Windows are half-open
+  `[start, end)` and timezone-aware.
+- **`tests/fixtures/golden_dataset.py`** + **`tests/golden_expected.py`** — 83
+  deterministic rows and hand-derived constants with the arithmetic written out.
+  The expectations were never computed from the code under test.
+- **`tests/test_metric_reconciliation.py`** — cross-surface matrix. Was a 13
+  point spread across four values; now **0.0**.
+- **`tests/test_metrics_guards.py`** — AST purity check, an inline-math
+  allowlist that may only shrink (23 → 12 entries), and invariants.
+- **`docs/METRIC_RECONCILIATION_2026-08.md`** — the findings report.
+- **`docs/METRIC_DEFINITIONS.md`** — generated from docstrings so the published
+  methodology cannot drift from the code again.
+
+#### Defects fixed along the way
+
+Unanalyzed responses counted as "brand not mentioned" (so a failed collection
+looked like a reputation drop); Excel silently truncating answers at 32,767
+characters; one control character killing an entire export; shared brands 404ing
+on export; sentiment dividing a Yes-only numerator by a Yes+Indirect
+denominator; `Top 3` dropped by the storage layer and scored as `Not Mentioned`;
+the Leadership Visibility tile and its own trend arrow using different formulas;
+the positioning bar chart silently absent from every report for want of a dict
+key; Redis cache entries for the default view being uninvalidatable; and a
+test-suite isolation bug that had been writing real database files into the repo
+root.
+
+#### Product changes (Rachel's direction)
+
+- **Reports removed entirely**, ~3,700 lines. Replaced by period-scoped data
+  exports at `/exports/responses.csv`, which carry `Counted In Metrics` and
+  `Excluded Because` columns so any dashboard figure can be reproduced from the
+  spreadsheet.
+- **Month/quarter comparison fixed**: an empty baseline no longer reports a
+  spurious full-value jump, precision matches batch mode, and windows are
+  Eastern-local rather than naive UTC.
+- **Monthly highlights email removed.** Quarterly retained.
+
+#### Investigations (new feature, partially built)
+
+Phases A and B are merged: the record, its lifecycle, and a deterministic
+evidence pack of 8 tools over `metrics_core`. No LLM is called yet.
+**Phases C (agent loop), D (frontend) and E (auto-triggers) remain — the full
+spec is in `docs/INVESTIGATIONS_DESIGN.md`.**
+
 ### NEXT SESSION
+
+1. **Investigations Phases C, D, E.** Spec: `docs/INVESTIGATIONS_DESIGN.md`.
+   Decisions already made: both manual and auto triggers; thresholds on by
+   default; with no grounded provider key, degrade and record the limitation
+   rather than failing the run.
+2. **Re-run SAST** (`./scripts/run_sast.sh`). Note: semgrep currently reports a
+   FAILURE that is actually a *rule-download* failure, not a finding. Zscaler
+   intercepts semgrep.dev transparently (even with the proxy env unset) and
+   Python's certifi does not trust its CA, while curl does. Verified fix:
+   point `REQUESTS_CA_BUNDLE` at certifi's bundle concatenated with the Zscaler
+   root. The script should also distinguish "scan could not run" from "scan
+   found problems" — a security gate that conflates them is worse than none.
+3. **Merge plan for 2.0.** `release/2.0` was already merged to `main` via PR #23,
+   and `release/2.0` is a direct ancestor of this branch, so this is a clean
+   fast-forward with no force-push. Suggested: fast-forward `release/2.0` onto
+   this work, PR to `main`, then tag `v2.0.0` (the only tag today is `v1.0.0`).
+   Do **not** force-push over the existing 2.0 commits; they are public and may
+   have been cloned.
+
+### Earlier: session 3 handover
 
 Web search grounding + latest models merged to `main` (PR #15). PNNL/labs update email drafted, awaiting recipients + send from Rachel's work account.
 
