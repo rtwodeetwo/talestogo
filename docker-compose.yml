@@ -91,6 +91,17 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-production}
       - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
       - PORT=8000
+
+      # Investigations. Auto-triggers are ON by default; set to false to run
+      # investigations only when someone asks for one from the UI. Worth turning
+      # off around a data import or a change in collection method, when a large
+      # movement is expected and already understood.
+      # Thresholds are absolute percentage points. See docs/ENV_VARS_REFERENCE.md.
+      - INVESTIGATIONS_AUTO_TRIGGER=${INVESTIGATIONS_AUTO_TRIGGER:-true}
+      - INVESTIGATION_THRESHOLD_MENTION_RATE=${INVESTIGATION_THRESHOLD_MENTION_RATE:-10.0}
+      - INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE=${INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE:-15.0}
+      - INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY=${INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY:-15.0}
+      - INVESTIGATION_THRESHOLD_SHARE_OF_VOICE=${INVESTIGATION_THRESHOLD_SHARE_OF_VOICE:-10.0}
     depends_on:
       db:
         condition: service_healthy
