@@ -281,26 +281,63 @@ def export_report_data_to_csv(
     import csv
     from app.utils.brand_access import get_data_owner_user_id
 
+    from app.services.metrics_core import MENTION_VALUES
+
     # Get the report with brand access validation
     db_report = get_report_with_brand_access(db, report_id, current_user.id, brand_id)
 
+    # Scope to the brand the REPORT belongs to, not whichever brand happens to be
+    # active in the UI. Previously you could open a January report for brand A,
+    # switch to brand B, and export brand B's responses under brand A's title.
+    # Legacy reports predate the column, so fall back to the active brand.
+    report_brand_id = db_report.brand_id if db_report.brand_id is not None else brand_id
+
     # Get the data owner user_id
-    data_owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
+    data_owner_user_id = get_data_owner_user_id(db, report_brand_id, current_user.id)
 
     # Get all responses for this user/brand
     # If report has date range, filter by it; otherwise get all responses
     query = db.query(models.Response).filter(
         models.Response.user_id == data_owner_user_id,
-        models.Response.brand_id == brand_id
+        models.Response.brand_id == report_brand_id
     )
 
-    # Filter by report's date range if available
+    # Filter by report's date range if available.
+    # NOTE: the `<=` here is inclusive while scripts/admin/generate_report.py uses
+    # an exclusive `<` against a first-of-next-month end_date, and both
+    # conventions are present in the reports table. Unifying on a half-open
+    # [start, end) window changes which rows land in a period, so it is deferred
+    # to the timezone work rather than slipped in with the export fixes.
     if db_report.start_date:
         query = query.filter(models.Response.timestamp >= db_report.start_date)
     if db_report.end_date:
         query = query.filter(models.Response.timestamp <= db_report.end_date)
 
     responses = query.order_by(models.Response.timestamp.desc()).all()
+
+    # Rows can be present here and still absent from the published metrics, for
+    # four different reasons. The export has to say which, otherwise there is no
+    # way to get from this spreadsheet back to the number printed in the report.
+    brand_queries = db.query(models.Query).filter(
+        models.Query.user_id == data_owner_user_id,
+        models.Query.brand_id == report_brand_id,
+    ).all()
+    branded_query_ids = {q.query_id for q in brand_queries if q.brand_in_query}
+    known_query_ids = {q.query_id for q in brand_queries}
+
+    def exclusion_reason(response) -> str:
+        """Why this row is not in the metrics, matching metrics_core exactly."""
+        if response.query_id not in known_query_ids:
+            # Branded-ness cannot be determined without the query, so the row
+            # cannot be correctly placed either way.
+            return 'Query no longer exists'
+        if response.query_id in branded_query_ids:
+            return 'Brand named in the question'
+        if response.analyzed_at is None:
+            return 'Not analyzed'
+        if response.brand_mentioned not in MENTION_VALUES:
+            return 'Unrecognized analysis result'
+        return ''
 
     # Create CSV in memory
     output = io.StringIO()
@@ -309,11 +346,14 @@ def export_report_data_to_csv(
     # Write header row
     writer.writerow([
         'ID',
+        # The dashboard scopes by batch, so without this column a spreadsheet
+        # cannot be reconciled against anything shown on screen.
+        'Batch ID',
         'Query ID',
         'Query Text',
         'Platform',
         'Response Text',
-        'Timestamp',
+        'Timestamp (UTC)',
         'Brand Mentioned',
         'Brand Position',
         'Sentiment',
@@ -321,13 +361,20 @@ def export_report_data_to_csv(
         'Competitors',
         'Sources',
         'Notes',
-        'Analyzed At'
+        'Analyzed At (UTC)',
+        # Whether this row is behind the published number, and if not, why not.
+        'Brand In Query',
+        'Counted In Metrics',
+        'Excluded Because',
     ])
 
     # Write data rows
     for response in responses:
+        is_branded = response.query_id in branded_query_ids
+        reason = exclusion_reason(response)
         writer.writerow([
             response.id,
+            response.batch_id if response.batch_id is not None else '',
             response.query_id,
             response.query_text or '',
             response.platform,
@@ -340,12 +387,18 @@ def export_report_data_to_csv(
             response.competitors or '',
             response.sources or '',
             response.notes or '',
-            response.analyzed_at.isoformat() if response.analyzed_at else ''
+            response.analyzed_at.isoformat() if response.analyzed_at else '',
+            'Yes' if is_branded else 'No',
+            'No' if reason else 'Yes',
+            reason,
         ])
 
     # Prepare response
     output.seek(0)
-    csv_content = output.getvalue().encode('utf-8')
+    # utf-8-sig, not utf-8. Without the byte-order mark Excel opens the file in
+    # the system codepage, so every curly quote, em dash and accented character
+    # in an AI-written answer arrives as mojibake.
+    csv_content = output.getvalue().encode('utf-8-sig')
 
     # Create safe filename
     safe_filename = "".join(c for c in db_report.title if c.isalnum() or c in (' ', '-', '_')).rstrip()
@@ -353,7 +406,7 @@ def export_report_data_to_csv(
 
     return StreamingResponse(
         io.BytesIO(csv_content),
-        media_type="text/csv",
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 

@@ -161,25 +161,88 @@ class TestCsvExport:
         assert response.status_code == 200, response.text
         return response, list(csv.DictReader(io.StringIO(response.text)))
 
-    @pytest.mark.xfail(reason="reports.py:295 applies no analyzed_at filter, so the CSV "
-                              "row count cannot equal the report's total_responses",
-                       strict=False)
-    def test_row_count_matches_the_reports_population(self, rows):
-        _, parsed = rows
-        assert len(parsed) == gx.B1_POPULATION
+    def test_the_reports_population_is_derivable_from_the_csv(self, rows):
+        """The reconciliation property that matters.
 
-    @pytest.mark.xfail(reason="reports.py:333 encodes plain utf-8 with no BOM, so Excel "
-                              "opens it in the system codepage", strict=False)
+        A raw data export should show every row, not silently hide the ones the
+        metrics excluded. So instead of the row count matching the report, the
+        CSV carries the flags needed to reproduce the report's population from
+        the spreadsheet: filter on "Counted In Metrics" and you get exactly the
+        rows behind the published number.
+        """
+        _, parsed = rows
+        counted = [r for r in parsed if r["Counted In Metrics"] == "Yes"]
+        assert len(counted) == gx.B1_POPULATION
+
+    def test_shows_every_row_not_just_the_counted_ones(self, rows):
+        """Excluded rows stay visible, so a collection failure is inspectable."""
+        _, parsed = rows
+        assert len(parsed) > gx.B1_POPULATION
+        assert any(r["Counted In Metrics"] == "No" for r in parsed)
+
+    def test_branded_queries_are_labelled(self, rows):
+        _, parsed = rows
+        branded = [r for r in parsed if r["Brand In Query"] == "Yes"]
+        assert len(branded) == gx.B1_BRANDED_EXCLUDED + 1  # +1 unanalyzed branded row
+
+    def test_every_excluded_row_says_why(self, rows):
+        """The counts in data_quality, made row-level and inspectable.
+
+        This is what lets a failed collection be told apart from a reputation
+        drop without opening the database.
+        """
+        _, parsed = rows
+        excluded = [r for r in parsed if r["Counted In Metrics"] == "No"]
+        assert excluded
+        assert all(r["Excluded Because"] for r in excluded)
+        assert not any(r["Excluded Because"] for r in parsed
+                       if r["Counted In Metrics"] == "Yes")
+
+        reasons = {r["Excluded Because"] for r in excluded}
+        assert reasons == {
+            "Brand named in the question",
+            "Not analyzed",
+            "Unrecognized analysis result",
+            "Query no longer exists",
+        }
+
+    def test_exclusion_reasons_match_the_canonical_counts(self, rows, golden_db):
+        """Row-level reasons must add up to what metrics_core reports.
+
+        A row can be excluded for more than one reason at once, and the CSV
+        reports one per row by precedence, so the branded-and-unanalyzed row
+        shows as branded. Total exclusions still reconcile.
+        """
+        _, parsed = rows
+        counts = {}
+        for row in parsed:
+            if row["Excluded Because"]:
+                counts[row["Excluded Because"]] = counts.get(row["Excluded Because"], 0) + 1
+
+        assert counts["Not analyzed"] == gx.B1_UNANALYZED_ORGANIC
+        assert counts["Unrecognized analysis result"] == gx.B1_INVALID_ENUM_EXCLUDED
+        assert counts["Query no longer exists"] == gx.B1_ORPHAN_EXCLUDED
+        assert counts["Brand named in the question"] == (
+            gx.B1_BRANDED_EXCLUDED + gx.B1_UNANALYZED_BRANDED)
+
+        assert sum(counts.values()) == gx.B1_TOTAL_ROWS - gx.B1_POPULATION
+
     def test_has_utf8_bom_for_excel(self, rows):
         response, _ = rows
-        assert response.content.startswith(b"\xef\xbb\xbf")
+        assert response.content.startswith(b"\xef\xbb\xbf"), (
+            "without a BOM Excel opens the file in the system codepage and every "
+            "curly quote and accented character in an AI answer becomes mojibake")
 
-    @pytest.mark.xfail(reason="neither export includes batch_id, so a spreadsheet cannot "
-                              "be reconciled to the dashboard's batch selector",
-                       strict=False)
     def test_includes_batch_id(self, rows):
         _, parsed = rows
-        assert parsed and "batch_id" in {k.lower() for k in parsed[0]}
+        assert parsed and "batch id" in {k.lower() for k in parsed[0]}
+
+    def test_long_answers_are_not_truncated(self, rows):
+        """The CSV has no cell limit, which is why the Excel truncation note
+        points here for the full text."""
+        _, parsed = rows
+        longest = max((len(r["Response Text"]) for r in parsed), default=0)
+        assert longest == gx.LONG_RESPONSE_LENGTH
 
     def test_multiline_bodies_do_not_break_row_alignment(self, rows):
         """csv.writer quotes embedded newlines correctly; this guards a regression."""
@@ -208,32 +271,32 @@ class TestExcelExport:
         assert response.status_code == 200, response.text[:500]
         return openpyxl.load_workbook(io.BytesIO(response.content))
 
-    @pytest.mark.xfail(reason="responses.py:206 -> openpyxl/cell/cell.py:163 slices at "
-                              "32767 chars with no error and no marker", strict=False)
     def test_long_answers_are_not_silently_truncated(self, workbook):
-        """The reported symptom: answers cut off in the spreadsheet."""
+        """The reported symptom: answers cut off in the spreadsheet.
+
+        Excel genuinely cannot hold more than 32,767 characters in one cell, so
+        the fix is not to preserve the full text here. It is to stop losing it
+        silently: the cell now ends with a visible note saying it was cut and
+        where to get the whole answer. The CSV export has no such limit.
+        """
         sheet = workbook.active
         longest = max(
-            (len(cell.value) for row in sheet.iter_rows(min_row=2)
+            (cell.value for row in sheet.iter_rows(min_row=2)
              for cell in row if isinstance(cell.value, str)),
-            default=0)
-        assert longest >= gx.LONG_RESPONSE_LENGTH
+            key=len, default="")
+        assert len(longest) > 30000, "the long fixture body is missing entirely"
+        assert "[truncated at 32767 characters" in longest, (
+            "a truncated answer must say so in the cell, not just end mid-word")
+        assert "CSV export" in longest, "the note must point at the full text"
 
-    @pytest.mark.xfail(reason="responses.py:170-183 omits Query Text, so an exported "
-                              "row identifies its question only by id", strict=False)
     def test_includes_query_text(self, workbook):
         headers = {str(c.value).lower() for c in next(workbook.active.iter_rows(max_row=1))}
         assert any("query text" in h for h in headers)
 
-    @pytest.mark.xfail(reason="neither export includes batch_id", strict=False)
     def test_includes_batch_id(self, workbook):
         headers = {str(c.value).lower() for c in next(workbook.active.iter_rows(max_row=1))}
         assert any("batch" in h for h in headers)
 
-    @pytest.mark.xfail(reason="responses.py:206 assigns response_text with no guard; "
-                              "openpyxl raises IllegalCharacterError at assignment "
-                              "(openpyxl/cell/cell.py:164) for any control character, "
-                              "failing the whole export", strict=False)
     def test_export_survives_control_characters(self, golden_client):
         """One vertical tab anywhere in the data takes down the entire download.
 
@@ -249,9 +312,6 @@ class TestExcelExport:
 
 
 class TestExcelExportScoping:
-    @pytest.mark.xfail(reason="responses.py:159 filters by current_user.id instead of "
-                              "get_data_owner_user_id (app/utils/brand_access.py:170), "
-                              "so shared brands 404", strict=False)
     def test_shared_brand_users_can_export(self, golden_session_factory, golden_db):
         """responses.py:159 filters by current_user.id instead of the brand owner,
         so a user viewing a shared brand sees the table but cannot export it."""

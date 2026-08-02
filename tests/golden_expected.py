@@ -31,6 +31,13 @@ B1_UNANALYZED_EXCLUDED = 6
 B1_INVALID_ENUM_EXCLUDED = 1
 B1_ORPHAN_EXCLUDED = 1
 
+# Of the 6 unanalyzed rows, 5 are organic and 1 came from a branded query.
+# Where a row is excluded for more than one reason, surfaces that report a
+# single reason per row apply a precedence: query missing, then branded, then
+# unanalyzed, then off-enum. So the branded unanalyzed row reports as branded.
+B1_UNANALYZED_ORGANIC = 5
+B1_UNANALYZED_BRANDED = 1
+
 # Mentions: 12 "Yes" + 10 "Indirect" = 22 of 40
 # 22 / 40 = 0.55
 B1_MENTION_RATE = 55.0
