@@ -522,6 +522,24 @@ def platform_mention_rates(pop: MetricPopulation) -> Dict[str, MetricValue]:
     }
 
 
+def query_mention_rates(pop: MetricPopulation) -> Dict[str, MetricValue]:
+    """Per-query mention rate, using the same definition as mention_rate.
+
+    Which individual questions the brand is and is not showing up for. Branded
+    queries are excluded here as everywhere else: asking "what is <brand> known
+    for" and then counting that the brand was mentioned measures nothing.
+    """
+    by_query: Dict[str, List[ResponseRecord]] = {}
+    for row in pop.organic_rows():
+        by_query.setdefault(row.query_id, []).append(row)
+    return {
+        query_id: _rate(sum(1 for r in rows if r.is_mentioned), len(rows),
+                        f"mention_rate.query.{query_id}",
+                        {"query_text": rows[0].query_text})
+        for query_id, rows in sorted(by_query.items())
+    }
+
+
 def data_quality(pop: MetricPopulation) -> Dict[str, int]:
     """Everything excluded from the metrics above, so it can be shown, not hidden.
 

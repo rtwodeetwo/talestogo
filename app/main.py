@@ -87,6 +87,7 @@ from app.routers import (
     descriptors,
     reports,
     exports,  # Period-scoped spreadsheet exports
+    investigations,  # Agentic "why did this change" analysis
     brands,
     operations,
     tenants,
@@ -273,6 +274,7 @@ app.include_router(brands.router_brand_info)
 app.include_router(reports.router)
 app.include_router(reports.how_tales_works_router)
 app.include_router(exports.router)
+app.include_router(investigations.router)
 app.include_router(operations.router)
 
 # Analytics and admin routers

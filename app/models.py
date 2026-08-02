@@ -449,6 +449,125 @@ class ScheduledTaskHistory(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+# ==================== Investigations ====================
+#
+# An investigation explains WHY the metrics moved between two comparable
+# windows. The dashboard says the mention rate fell; an investigation drills
+# from that aggregate into per-query and per-platform detail, reads the actual
+# response text, and (when a grounded provider is configured) checks external
+# news, then writes up findings and recommended actions.
+#
+# Every figure an investigation quotes comes from app/services/metrics_core.py,
+# the same definitions the dashboard and the exports use, so an investigation
+# cannot contradict the screen it was launched from.
+
+
+class Investigation(Base):
+    """One agent run explaining a change between two windows."""
+    __tablename__ = "investigations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    brand_id = Column(Integer, ForeignKey("brand_info.id"), nullable=False)
+
+    trigger_type = Column(String(20), nullable=False, default='manual')  # manual | auto
+
+    # What is being compared. 'batch' pits a collection batch against the one
+    # before it; 'month' and 'quarter' aggregate whole calendar periods, exactly
+    # as the dashboard's comparison modes do.
+    comparison_mode = Column(String(20), nullable=False, default='month')
+
+    # Set for comparison_mode='batch'.
+    current_batch_id = Column(Integer, ForeignKey("collection_batches.id"), nullable=True)
+    previous_batch_id = Column(Integer, ForeignKey("collection_batches.id"), nullable=True)
+
+    # Set for comparison_mode in ('month', 'quarter'). Stored as resolved UTC
+    # bounds so an investigation always re-reads the window it was created for,
+    # even if the period helpers change later.
+    current_period_start = Column(DateTime, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+    current_period_label = Column(String(50), nullable=True)
+    previous_period_start = Column(DateTime, nullable=True)
+    previous_period_end = Column(DateTime, nullable=True)
+    previous_period_label = Column(String(50), nullable=True)
+
+    status = Column(String(20), nullable=False, default='pending')  # pending|running|completed|failed
+
+    # Findings
+    title = Column(String(500), nullable=True)
+    summary = Column(Text, nullable=True)              # markdown
+    key_findings = Column(Text, nullable=True)         # JSON array of strings
+    recommended_actions = Column(Text, nullable=True)  # JSON array of strings
+
+    # The metric deltas that prompted the run (JSON), for auto-triggered ones.
+    trigger_metrics = Column(Text, nullable=True)
+
+    # What the run could NOT do, and what that means for its conclusions. Kept
+    # separate from error_message: a missing web-search key degrades an
+    # investigation without failing it, and showing that as an error would be
+    # misleading. JSON array of {"limitation": ..., "impact": ...}.
+    limitations = Column(Text, nullable=True)
+
+    total_tool_calls = Column(Integer, default=0)
+    total_tokens_used = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    # Touched as the run progresses. A record whose heartbeat has gone stale was
+    # orphaned by a restart or a crash and can be reaped, rather than sitting in
+    # 'running' forever.
+    last_heartbeat_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow,
+                        onupdate=datetime.datetime.utcnow)
+
+    tool_invocations = relationship(
+        "InvestigationToolInvocation",
+        back_populates="investigation",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index('idx_investigation_user_brand', 'user_id', 'brand_id'),
+        Index('idx_investigation_status_created', 'status', 'created_at'),
+        # Supports the auto-trigger dedupe check: has this brand already had an
+        # investigation for this period and mode?
+        Index('idx_investigation_brand_mode_period',
+              'brand_id', 'comparison_mode', 'current_period_start'),
+    )
+
+
+class InvestigationToolInvocation(Base):
+    """Audit trail: every piece of evidence the agent actually looked at.
+
+    This is the reasoning trace, and it is exposed through the API. The point of
+    an investigation is that its conclusions can be checked, which means the
+    inputs behind them have to be visible.
+    """
+    __tablename__ = "investigation_tool_invocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    investigation_id = Column(
+        Integer, ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False)
+
+    sequence = Column(Integer, nullable=False, default=0)
+    tool_name = Column(String(100), nullable=False)
+    tool_input_json = Column(Text, nullable=True)
+    tool_output_json = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default='success')  # success | failed
+    error = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    investigation = relationship("Investigation", back_populates="tool_invocations")
+
+    __table_args__ = (
+        Index('idx_tool_invocation_investigation', 'investigation_id', 'sequence'),
+    )
+
+
 # --- End of Models ---
 
 # You can create the database file and tables by running this:

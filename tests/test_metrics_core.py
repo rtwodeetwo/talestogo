@@ -214,6 +214,22 @@ class TestDescriptors:
         assert mc.descriptor_frequency(batch1) == gx.B1_DESCRIPTOR_FREQUENCY
 
 
+class TestQueries:
+    def test_per_query_rates_use_the_headline_definition(self, batch1):
+        rates = mc.query_mention_rates(batch1)
+        headline = mc.mention_rate(batch1)
+        assert sum(r.numerator for r in rates.values()) == headline.numerator
+        assert sum(r.denominator for r in rates.values()) == headline.denominator
+
+    def test_branded_queries_are_absent(self, batch1):
+        """A branded query measures nothing about organic visibility."""
+        assert not any(q.startswith("QB") for q in mc.query_mention_rates(batch1))
+
+    def test_carries_the_query_text(self, batch1):
+        rates = mc.query_mention_rates(batch1)
+        assert all(r.detail.get("query_text") for r in rates.values())
+
+
 class TestPlatforms:
     def test_per_platform_rates_match_golden(self, batch1):
         assert _values(mc.platform_mention_rates(batch1)) == gx.B1_PLATFORM_MENTION_RATES
