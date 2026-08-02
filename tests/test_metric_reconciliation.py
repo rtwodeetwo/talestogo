@@ -117,6 +117,106 @@ class TestDashboardInternalConsistency:
         assert dashboard["previous_collection_date"] is None
 
 
+class TestStandaloneAnalyticsPages:
+    """The analytics pages that do not go through the dashboard endpoint.
+
+    These serve from AnalyticsCache. Until it was migrated, the Share of Voice
+    page reported 75.9% for the same batch the Dashboard tile showed at 55.0%,
+    because it counted competitors only inside answers where the brand had
+    already been mentioned and then labelled that as a share of the whole.
+    """
+
+    def test_share_of_voice_page_matches_the_dashboard_tile(self, golden_client,
+                                                            golden_db_with_stored_analytics):
+        dashboard = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        sov = golden_client.get(
+            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        brand_row = next((r for r in sov if r.get("is_brand")), None)
+        assert brand_row is not None
+        assert brand_row["percentage"] == dashboard["share_of_voice"] == gx.B1_SHARE_OF_VOICE
+
+    def test_share_of_voice_page_leadership_matches_the_tile(self, golden_client,
+                                                             golden_db_with_stored_analytics):
+        dashboard = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        sov = golden_client.get(
+            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        brand_row = next(r for r in sov if r.get("is_brand"))
+        assert (brand_row["leadership_visibility"]
+                == dashboard["leadership_visibility"]
+                == gx.B1_LEADERSHIP_VISIBILITY)
+
+    def test_competitor_rows_match_canonical(self, golden_client,
+                                             golden_db_with_stored_analytics):
+        """Names are normalized consistently, so the page and the trend chart
+        show the same roster rather than split versus merged rows."""
+        sov = golden_client.get(
+            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        competitors = {r["organization"]: r["percentage"]
+                       for r in sov if not r.get("is_brand")}
+        assert competitors == gx.B1_COMPETITOR_SHARE_OF_VOICE
+
+    def test_page_shares_sum_to_one_hundred(self, golden_client,
+                                            golden_db_with_stored_analytics):
+        sov = golden_client.get(
+            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        assert sum(r["percentage"] for r in sov) == pytest.approx(100.0, abs=0.1)
+
+
+class TestPerLlmEndpoints:
+    """The per-LLM charts must reconcile to the headline above them."""
+
+    def test_mentions_by_llm_match_canonical(self, golden_client, golden_db):
+        rows = golden_client.get(
+            f"/api/analytics/brand-mentions-by-llm?brand_id={BRAND_1_ID}"
+            f"&batch_id={BATCH_1_ID}").json()
+        rates = {r["platform"]: r["mention_rate"] for r in rows}
+        assert rates == gx.B1_PLATFORM_MENTION_RATES
+
+    def test_mentions_by_llm_sum_to_the_headline(self, golden_client, golden_db):
+        """The chart used to count 'Yes' only while the headline counted
+        Yes+Indirect, so it was systematically lower than the number above it."""
+        rows = golden_client.get(
+            f"/api/analytics/brand-mentions-by-llm?brand_id={BRAND_1_ID}"
+            f"&batch_id={BATCH_1_ID}").json()
+        assert sum(r["mentions"] for r in rows) == gx.B1_MENTION_NUMERATOR
+        assert sum(r["total_responses"] for r in rows) == gx.B1_POPULATION
+
+    def test_positioning_by_llm_reports_top_3(self, golden_client, golden_db):
+        """Top 3 was filtered out of this chart while counting everywhere else."""
+        rows = golden_client.get(
+            f"/api/analytics/positioning-by-llm?brand_id={BRAND_1_ID}"
+            f"&batch_id={BATCH_1_ID}").json()
+        assert rows
+        assert all("Top 3" in row for row in rows)
+        assert (sum(row["Top 3"] for row in rows)
+                == gx.B1_POSITION_COUNTS["Top 3"])
+
+    def test_positioning_by_llm_totals_match_the_population(self, golden_client, golden_db):
+        rows = golden_client.get(
+            f"/api/analytics/positioning-by-llm?brand_id={BRAND_1_ID}"
+            f"&batch_id={BATCH_1_ID}").json()
+        assert sum(row["total"] for row in rows) == gx.B1_POPULATION
+
+
+class TestPositioningChart:
+    def test_chart_renders_instead_of_raising(self, tmp_path):
+        """chart_generator read a 'top_3' key that calculate_positioning_metrics
+        never emits, so the KeyError was swallowed and the positioning bar chart
+        was silently absent from every generated report."""
+        from app.services.chart_generator import generate_positioning_bar_chart
+
+        metrics_without_top3 = {
+            "leader": 3, "featured": 4, "listed": 7, "not_mentioned": 24, "total": 40,
+        }
+        output = str(tmp_path / "positioning.png")
+        path = generate_positioning_bar_chart(metrics_without_top3, "Golden Labs", output)
+        assert path == output
+        import os
+        assert os.path.exists(output) and os.path.getsize(output) > 0
+
+
 # ======================================================== surface: stored cache
 
 class TestStoredBatchAnalytics:

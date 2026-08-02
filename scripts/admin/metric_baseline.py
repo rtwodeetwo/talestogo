@@ -100,10 +100,10 @@ def collect_mention_rates(db, user_id: int, brand_id: int,
         AnalyticsCache(db, user_id=user_id, brand_id=brand_id,
                        batch_id=batch_id).get_dashboard_data().get("mention_rate")))
 
-    # app/routers/highlights.py:152 -- the closest to correct today: organic,
-    # Yes+Indirect, 1dp. Still no analyzed_at filter and no user_id filter.
-    results["highlights.py:152"] = _safe(lambda: _pct(
-        highlights._compute_mention_rate(responses, non_branded)[2]))
+    # app/routers/highlights.py -- migrated to metrics_core.
+    results["highlights.py (migrated)"] = _safe(lambda: _pct(
+        highlights._compute_mention_rate(
+            _population(db, user_id, brand_id, batch_id))[2]))
 
     # app/routers/analytics.py:739 -- per-LLM chart, 'Yes' only.
     results["routers/analytics.py:739 (per-LLM, Yes only)"] = _safe(lambda: _pct(

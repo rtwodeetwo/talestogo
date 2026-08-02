@@ -93,28 +93,27 @@ class TestMetricsCorePurity:
 # ====================================================== 2. inline metric math
 
 #: Percentage arithmetic anywhere but metrics_core is how a tenth implementation
-#: gets written. Every entry is a known site scheduled for migration in Phase 3+.
+#: gets written. Every entry is a site that still computes a rate for itself.
 #: The list may shrink. It may never grow.
+#:
+#: Started at 23 entries. Ten came off when the dashboard, the per-LLM endpoints,
+#: BatchAnalytics, the report generator, the exports and the highlights email
+#: were migrated. What remains is the legacy modules scheduled for deletion, the
+#: surfaces still to migrate, and tooling that reports on the old code by design.
 INLINE_MATH_ALLOWLIST = {
+    # Legacy metric modules. Superseded by metrics_core; kept importable so
+    # metric_baseline.py can show the contrast. Scheduled for deletion.
     "app/analytics.py",
-    "app/routers/analytics.py",
-    "app/routers/admin.py",
-    "app/routers/highlights.py",
-    "app/routers/reports.py",
-    "app/routers/batches.py",
-    "app/routers/operations.py",
     "app/services/metrics.py",
-    "app/services/analytics_cache.py",
-    "app/services/batch_analytics.py",
-    "app/services/cached_metrics.py",
-    "app/services/chart_generator.py",
-    "app/services/report_export.py",
-    "app/services/report_slideshow.py",
-    "app/services/data_pipeline.py",
-    "app/scheduler.py",
-    "scripts/admin/generate_report.py",
+    # Still to migrate.
+    "app/routers/admin.py",
+    "app/routers/highlights.py",     # per-query rates only; the metrics are migrated
+    "app/services/analytics_cache.py",  # trends and threats remain
+    "app/services/cached_metrics.py",   # reads BatchAnalytics columns directly
+    "scripts/admin/generate_report.py",  # narrative sections beyond period metrics
     "scripts/admin/analyze_responses.py",
     "scripts/admin/collect_responses.py",
+    # Reports on the legacy implementations by design.
     "scripts/admin/metric_baseline.py",
     # Demo and debug tooling rather than app metrics. Flagged separately: the
     # first two generate randomized, backdated data and write it to whatever

@@ -137,13 +137,17 @@ def generate_positioning_bar_chart(positioning_metrics: Dict[str, Any], brand_na
     Generate a bar chart showing brand positioning distribution.
     Returns the file path of the generated chart.
     """
+    # `top_3` is optional: metrics.calculate_positioning_metrics folds Top 3 into
+    # `featured` and never emits the key, which used to raise KeyError here. The
+    # exception was swallowed by the caller, so the positioning bar chart was
+    # silently absent from every generated report.
     positions = ['Leader', 'Top 3', 'Featured', 'Listed', 'Not Mentioned']
     counts = [
-        positioning_metrics['leader'],
-        positioning_metrics['top_3'],
-        positioning_metrics['featured'],
-        positioning_metrics['listed'],
-        positioning_metrics['not_mentioned']
+        positioning_metrics.get('leader', 0),
+        positioning_metrics.get('top_3', 0),
+        positioning_metrics.get('featured', 0),
+        positioning_metrics.get('listed', 0),
+        positioning_metrics.get('not_mentioned', 0)
     ]
 
     colors_map = [COLORS['success'], COLORS['primary'], COLORS['secondary'], COLORS['warning'], COLORS['danger']]
@@ -697,7 +701,12 @@ def generate_all_charts(
                 f"{charts_dir}/{brand_slug}_positioning_{timestamp}.png"
             )
         except Exception as e:
+            # Print the traceback, not just the message. A bare KeyError('top_3')
+            # rendered as "Warning: Could not generate positioning chart: 'top_3'",
+            # which is why this went unnoticed across every report.
+            import traceback
             print(f"Warning: Could not generate positioning chart: {e}")
+            traceback.print_exc()
 
     if 'sentiment' not in chart_paths:
         try:

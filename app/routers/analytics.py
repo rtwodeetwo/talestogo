@@ -711,7 +711,10 @@ def get_sentiment_over_time(
 def get_brand_mentions_by_llm(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
-    brand_id: Optional[int] = Depends(get_active_brand_id)
+    brand_id: Optional[int] = Depends(get_active_brand_id),
+    # These endpoints used to ignore scoping entirely and always report
+    # all-time figures, even when displayed under a period or batch heading.
+    batch_id: Optional[int] = None,
 ):
     """
     Get brand mention rates broken down by LLM platform.
@@ -723,52 +726,34 @@ def get_brand_mentions_by_llm(
 
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
 
-    # Query responses grouped by platform, joining with Query to filter for organic queries only
-    from sqlalchemy import func, case
+    # Same definition as the headline mention rate, so the per-LLM chart adds up
+    # to the number above it. This previously counted 'Yes' only, dropping
+    # Indirect mentions, and required batch_id IS NOT NULL, which silently
+    # excluded imported rows from denominators presented as platform totals.
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id)
+        if batch_id else metrics_query.MetricScope(owner_user_id, brand_id))
 
-    platform_stats = db.query(
-        models.Response.platform,
-        func.count(models.Response.id).label('total'),
-        func.sum(
-            case(
-                (models.Response.brand_mentioned == 'Yes', 1),
-                else_=0
-            )
-        ).label('mentioned')
-    ).join(
-        models.Query,
-        (models.Response.query_id == models.Query.query_id) &
-        (models.Response.user_id == models.Query.user_id) &
-        (models.Response.brand_id == models.Query.brand_id)
-    ).filter(
-        models.Response.user_id == owner_user_id,
-        models.Response.brand_id == brand_id,
-        models.Response.platform.isnot(None),
-        models.Response.batch_id.isnot(None),  # Only include responses with batch_id for consistency with trend data
-        models.Query.brand_in_query == False  # Only organic queries
-    ).group_by(
-        models.Response.platform
-    ).all()
-
-    # Calculate mention rate for each platform
-    results = []
-    for platform, total, mentioned in platform_stats:
-        mention_rate = (mentioned / total * 100) if total > 0 else 0
-        results.append({
+    return [
+        {
             'platform': platform,
-            'total_responses': total,
-            'mentions': mentioned,
-            'mention_rate': round(mention_rate, 1)
-        })
+            'total_responses': int(value.denominator),
+            'mentions': int(value.numerator),
+            'mention_rate': value.value if value.value is not None else 0,
+        }
+        for platform, value in metrics_core.platform_mention_rates(population).items()
+    ]
 
-    return results
 
 
 @router.get("/positioning-by-llm")
 def get_positioning_by_llm(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
-    brand_id: Optional[int] = Depends(get_active_brand_id)
+    brand_id: Optional[int] = Depends(get_active_brand_id),
+    # These endpoints used to ignore scoping entirely and always report
+    # all-time figures, even when displayed under a period or batch heading.
+    batch_id: Optional[int] = None,
 ):
     """
     Get brand positioning breakdown by LLM platform.
@@ -780,48 +765,24 @@ def get_positioning_by_llm(
 
     owner_user_id = get_data_owner_user_id(db, brand_id, current_user.id)
 
-    # Query responses grouped by platform and position
-    # Exclude brand_in_query responses for consistency with positioning/breakdown endpoint
-    from sqlalchemy import func
+    # 'Top 3' is reported rather than silently dropped. The old filter listed
+    # only Leader/Featured/Listed/Not Mentioned, so a Top 3 placement vanished
+    # from this chart while counting toward every other positioning surface.
+    population = metrics_query.resolve(
+        db, metrics_query.MetricScope.for_batch(owner_user_id, brand_id, batch_id)
+        if batch_id else metrics_query.MetricScope(owner_user_id, brand_id))
 
-    platform_positioning = db.query(
-        models.Response.platform,
-        models.Response.brand_position,
-        func.count(models.Response.id).label('count')
-    ).join(
-        models.Query,
-        (models.Response.query_id == models.Query.query_id) &
-        (models.Response.user_id == models.Query.user_id) &
-        (models.Response.brand_id == models.Query.brand_id)
-    ).filter(
-        models.Response.user_id == owner_user_id,
-        models.Response.brand_id == brand_id,
-        models.Response.platform.isnot(None),
-        models.Response.brand_position.isnot(None),
-        models.Response.batch_id.isnot(None),  # Only include responses with batch_id for consistency with trend data
-        models.Query.brand_in_query == False  # Exclude branded queries for organic positioning
-    ).group_by(
-        models.Response.platform,
-        models.Response.brand_position
-    ).all()
-
-    # Organize data by platform
     platforms = {}
-    for platform, position, count in platform_positioning:
-        if platform not in platforms:
-            platforms[platform] = {
-                'platform': platform,
-                'Leader': 0,
-                'Featured': 0,
-                'Listed': 0,
-                'Not Mentioned': 0,
-                'total': 0
-            }
-
-        # Map the position to our standard categories
-        if position in ['Leader', 'Featured', 'Listed', 'Not Mentioned']:
-            platforms[platform][position] = count
-            platforms[platform]['total'] += count
+    for row in population.organic_rows():
+        if row.brand_position not in metrics_core.POSITION_VALUES:
+            continue
+        entry = platforms.setdefault(row.platform, {
+            'platform': row.platform,
+            **{label: 0 for label in metrics_core.POSITION_VALUES},
+            'total': 0,
+        })
+        entry[row.brand_position] += 1
+        entry['total'] += 1
 
     return list(platforms.values())
 
