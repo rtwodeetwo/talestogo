@@ -1,7 +1,8 @@
 # Tales Metric Reconciliation, August 2026
 
-**Status:** Phase 0-2 complete. No production behavior has changed.
+**Status:** Phase 0-2 complete. Export fixes landed. Metric formulas unchanged so far.
 **Branch:** `audit/metrics-reconciliation`
+**Scope:** TalesToGo only, which holds no data. See "There is nothing here to restate".
 **Reproduce:** `python scripts/admin/metric_baseline.py` and `pytest tests/ -q`
 
 ---
@@ -282,31 +283,57 @@ instead. Branded-ness cannot be determined without the query, so including them
 would be a guess. They are reported in `data_quality` rather than hidden. Say if
 you would rather they be included.
 
-**2. Order of the fixes.** My recommendation, highest value first:
+**2. Order of the fixes.** The export fixes have landed. Remaining, highest
+value first:
 
 1. The `analyzed_at` filter, plus surfacing excluded-row counts in the UI. This
-   is what stops a collection failure from looking like a reputation drop, and it
-   is the fix most likely to change your published numbers.
-2. The export fixes: Excel truncation, the control-character crash, the shared
-   brand 404, and the missing `batch_id` and query-text columns. Small, contained,
-   and they make the spreadsheets reconcilable to the Dashboard for the first time.
-3. The sentiment denominator mismatch, which makes the Dashboard card agree with
+   is what stops a collection failure from looking like a reputation drop.
+2. The sentiment denominator mismatch, which makes the Dashboard card agree with
    its own pie chart.
+3. The stored `BatchAnalytics` write path, which needs `Top 3` and a recompute.
 4. The rest of the surface migration.
 
 **3. The timezone decision.** The recommendation stands: store timezone-aware
 UTC, add a per-brand reporting timezone defaulting to `America/New_York`. That
-matches what the UI has always displayed, so no date visibly moves for PPPL, but
-month boundaries stop disagreeing with what you read on screen. The harness
-already demonstrates the problem: the same 20 responses give a February mention
-rate of 57.9% (Eastern), 63.2% (UTC) or 60.0% (by batch).
+matches what the UI has always displayed, so no date visibly moves, but month
+boundaries stop disagreeing with what is read on screen. The harness already
+demonstrates the problem: the same 20 responses give a February mention rate of
+57.9% (Eastern), 63.2% (UTC) or 60.0% (by batch).
 
-**4. Whether to run the baseline against real PPPL data.** Everything above is
-from a synthetic fixture, which was the agreed scope. Pointing
-`scripts/admin/metric_baseline.py --db` at a copy of the real database would
-produce the per-batch restatement table for your actual published history, which
-is what a restatement note would cite. The script is read-only and safe to run
-against a copy.
+---
+
+## There is nothing here to restate
+
+An earlier draft of this document treated the number changes as a restatement
+problem, and recommended running the baseline against a copy of the real
+database before changing anything. That was wrong, and it is worth being
+explicit about why.
+
+**TalesToGo holds no data.** It is the sanitized deployment kit that labs
+self-host, not a running instance. The local `tales.db` is empty: zero users,
+zero brands, zero responses. No batch has ever been collected here, no report
+has ever been generated from it, and no number produced by this code has ever
+been published.
+
+So the fixes below do not restate anything. They change what a lab's *first*
+collection will report, which is strictly an improvement: PNNL and anyone else
+who deploys this gets correct arithmetic from the start rather than inheriting
+nine implementations and a documented restatement.
+
+This also removes the gate. The `analyzed_at` filter was sequenced behind a
+real-data baseline in order to size the restatement. With nothing to size, the
+remaining fixes can be worked straight through.
+
+**The separate question this raises.** Tales' real PPPL reporting history lives
+in the private `tales_project` repository, not here. The two codebases share
+ancestry, so the defects catalogued in this document very likely exist there
+too, against data that *has* been published. This audit deliberately did not
+look: `CLAUDE.md` forbids touching `tales_project` from this working tree, and
+that rule was followed throughout. Whether to port these fixes there, and
+whether doing so warrants a restatement note on past monthly and quarterly
+reports, is a separate decision requiring a separate working tree. Nothing in
+this document should be read as a claim about `tales_project`'s numbers, in
+either direction.
 
 ---
 
