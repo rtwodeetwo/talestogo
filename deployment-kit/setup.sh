@@ -60,17 +60,23 @@ echo ""
 # Generate security keys
 echo "Generating security keys..."
 
-# Check if Python is available
+# APP_SECRET can be any random string. ENCRYPTION_KEY must be a valid Fernet
+# key: exactly 32 url-safe base64-encoded bytes, which is 44 characters with
+# the trailing '=' padding intact. secrets.token_urlsafe(32) produces 43
+# characters and Fernet rejects it, so do not use it here. Stripping the '='
+# from an openssl base64 string breaks it the same way.
 if command -v python3 &> /dev/null; then
     JWT_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
-    ENC_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+    ENC_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null) \
+        || ENC_KEY=$(python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
 elif command -v python &> /dev/null; then
     JWT_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-    ENC_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+    ENC_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null) \
+        || ENC_KEY=$(python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
 else
-    # Fallback to openssl if Python not available
+    # Fallback to openssl if Python not available. Note the padding is kept.
     JWT_KEY=$(openssl rand -base64 32 | tr -d '=' | tr '+/' '-_')
-    ENC_KEY=$(openssl rand -base64 32 | tr -d '=' | tr '+/' '-_')
+    ENC_KEY=$(openssl rand -base64 32 | tr '+/' '-_')
 fi
 
 # Update .env with generated keys (only if they still have placeholder values)
