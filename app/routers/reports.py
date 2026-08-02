@@ -213,17 +213,25 @@ def export_report_to_word(
 ):
     """Export a report to Word document format with embedded charts (supports shared brands)."""
     from app.services.report_export import export_to_word_with_charts
+    from app.utils.brand_access import get_data_owner_user_id
 
     # Get the report with brand access validation
     db_report = get_report_with_brand_access(db, report_id, current_user.id, brand_id)
 
-    # Generate Word document with charts
+    # Scope to the report's own brand and period, and resolve the data owner
+    # rather than the requesting user, so a shared brand exports real numbers
+    # instead of zeros.
+    report_brand_id = db_report.brand_id if db_report.brand_id is not None else brand_id
+    owner_user_id = get_data_owner_user_id(db, report_brand_id, current_user.id)
+
     word_file = export_to_word_with_charts(
         db_report.report_content,
         db_report.title,
         db,
-        user_id=current_user.id,
-        brand_id=brand_id
+        user_id=owner_user_id,
+        brand_id=report_brand_id,
+        start_date=db_report.start_date,
+        end_date=db_report.end_date,
     )
 
     # Create safe filename

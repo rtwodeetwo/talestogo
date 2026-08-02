@@ -205,6 +205,8 @@ def resolve(db: Session, scope: MetricScope) -> MetricPopulation:
             analyzed=r.analyzed_at is not None,
             is_branded_query=r.query_id in branded_query_ids,
             query_known=r.query_id in known_query_ids,
+            query_text=r.query_text or "",
+            timestamp=r.timestamp,
         )
         for r in responses
     ]

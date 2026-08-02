@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Report, BrandInfo, Response, BatchAnalytics, Query
+from app.services import metrics_core, metrics_query
 from app.services.email_notifications import send_email
 from app.services.llm_provider_manager import get_llm_provider_manager
 from app.services.period_ranges import get_period_comparison_ranges
@@ -134,110 +135,107 @@ def _find_monthly_report(db: Session, brand: BrandInfo, period_label: str):
     ).order_by(Report.created_at.desc()).first()
 
 
-def _get_non_branded_query_ids(db: Session, brand_id: int):
-    """Get query_id strings where brand_in_query is false."""
-    queries = db.query(Query.query_id).filter(
-        Query.brand_id == brand_id,
-        Query.brand_in_query == False,
-    ).all()
-    return {q.query_id for q in queries}
+def _resolve_population(db: Session, brand, start_date, end_date):
+    """Load the rows behind an emailed figure.
+
+    Windowing, branded-query exclusion and the analyzed_at filter all happen in
+    metrics_query, so the email measures exactly what the dashboard measures.
+    These endpoints previously did their own filtering and, among other things,
+    omitted user_id and counted unanalyzed rows in the denominator.
+    """
+    return metrics_query.resolve(db, metrics_query.MetricScope(
+        owner_user_id=brand.user_id,
+        brand_id=brand.id,
+        start=start_date,
+        end=end_date,
+    ))
 
 
-def _compute_mention_rate(responses, non_branded_qids):
-    """Compute mention rate from responses, excluding brand_in_query."""
-    eligible = [r for r in responses if r.query_id in non_branded_qids]
-    if not eligible:
-        return 0, 0, 0.0
-    mentioned = sum(1 for r in eligible if r.brand_mentioned in ("Yes", "Indirect"))
-    rate = round(100.0 * mentioned / len(eligible), 1)
-    return len(eligible), mentioned, rate
+def _compute_mention_rate(population):
+    """(counted, mentioned, rate) for the emailed headline."""
+    result = metrics_core.mention_rate(population)
+    return (int(result.denominator), int(result.numerator),
+            result.value if result.value is not None else 0.0)
 
 
-def _compute_platform_rates(responses, non_branded_qids):
-    """Compute per-platform mention rates."""
-    platforms = {}
-    for r in responses:
-        if r.query_id not in non_branded_qids:
-            continue
-        p = r.platform or "Unknown"
-        if p not in platforms:
-            platforms[p] = {"total": 0, "mentioned": 0}
-        platforms[p]["total"] += 1
-        if r.brand_mentioned in ("Yes", "Indirect"):
-            platforms[p]["mentioned"] += 1
-
-    result = {}
-    for p, counts in sorted(platforms.items(), key=lambda x: -x[1]["mentioned"]):
-        rate = round(100.0 * counts["mentioned"] / counts["total"], 1) if counts["total"] else 0
-        result[p] = {"total": counts["total"], "mentioned": counts["mentioned"], "rate": rate}
-    return result
+def _compute_platform_rates(population):
+    """Per-platform mention rates, using the headline definition."""
+    rates = metrics_core.platform_mention_rates(population)
+    ordered = sorted(rates.items(), key=lambda item: -item[1].numerator)
+    return {
+        platform: {
+            "total": int(value.denominator),
+            "mentioned": int(value.numerator),
+            "rate": value.value if value.value is not None else 0,
+        }
+        for platform, value in ordered
+    }
 
 
-def _compute_sentiment(responses):
-    """Compute sentiment from direct mentions only (where sentiment is populated)."""
-    with_sentiment = [r for r in responses
-                      if r.brand_mentioned == "Yes"
-                      and r.sentiment
-                      and r.sentiment.strip()]
-    if not with_sentiment:
+def _compute_sentiment(population):
+    """Sentiment breakdown over direct mentions carrying a sentiment value."""
+    distribution = metrics_core.sentiment_distribution(population)
+    total = int(distribution["Very Positive"].denominator)
+    if not total:
         return {}, 0
-
-    counts = Counter(r.sentiment for r in with_sentiment)
-    total = len(with_sentiment)
     result = {}
-    for s in ["Very Positive", "Positive", "Neutral", "Mixed", "Negative"]:
-        if counts.get(s, 0) > 0:
-            result[s] = {"count": counts[s], "pct": round(100.0 * counts[s] / total, 1)}
+    for label in ["Very Positive", "Positive", "Neutral", "Mixed", "Negative"]:
+        value = distribution[label]
+        if value.numerator > 0:
+            result[label] = {"count": int(value.numerator), "pct": value.value}
     return result, total
 
 
-def _compute_descriptors(responses):
-    """Count descriptor occurrences across mentioned responses."""
-    descriptor_counts = Counter()
-    for r in responses:
-        if r.brand_mentioned not in ("Yes", "Indirect"):
-            continue
-        if not r.descriptors:
-            continue
-        for d in r.descriptors.split(","):
-            d = d.strip()
-            if d:
-                descriptor_counts[d] += 1
-    return descriptor_counts.most_common(10)
+def _compute_descriptors(population):
+    """Top descriptors used about the brand, case-folded.
+
+    Previously counted raw strings, so "high-temperature plasma" and
+    "High-Temperature Plasma" competed for slots in the same top-10 list.
+    """
+    frequency = metrics_core.descriptor_frequency(population)
+    return list(frequency.items())[:10]
 
 
-def _compute_query_rates(responses, non_branded_qids):
-    """Compute per-query mention rates."""
+def _compute_query_rates(population):
+    """Per-query mention rates."""
     queries = {}
-    for r in responses:
-        if r.query_id not in non_branded_qids:
-            continue
-        if r.query_id not in queries:
-            queries[r.query_id] = {"total": 0, "mentioned": 0, "text": r.query_text or r.query_id}
-        queries[r.query_id]["total"] += 1
-        if r.brand_mentioned in ("Yes", "Indirect"):
-            queries[r.query_id]["mentioned"] += 1
+    for row in population.organic_rows():
+        entry = queries.setdefault(row.query_id, {
+            "total": 0, "mentioned": 0, "text": row.query_text or row.query_id,
+        })
+        entry["total"] += 1
+        if row.is_mentioned:
+            entry["mentioned"] += 1
 
-    for qid, data in queries.items():
-        data["rate"] = round(100.0 * data["mentioned"] / data["total"], 1) if data["total"] else 0
+    for data in queries.values():
+        data["rate"] = (round(100.0 * data["mentioned"] / data["total"], 1)
+                        if data["total"] else 0)
     return queries
 
 
-def _compute_monthly_breakdown(responses, non_branded_qids):
-    """Compute per-month mention rates for responses within a multi-month window."""
+def _compute_monthly_breakdown(population):
+    """Per-month mention rates within a multi-month window.
+
+    Months are keyed off the stored UTC timestamp, which is what every other
+    period boundary in the app currently uses. Note this can differ by a day
+    from the Eastern dates the UI displays for rows near a month boundary; that
+    discrepancy is tracked separately as the timezone work.
+    """
     months = {}
-    for r in responses:
-        if r.query_id not in non_branded_qids:
+    for row in population.organic_rows():
+        if row.timestamp is None:
             continue
-        key = r.timestamp.strftime("%B %Y")
-        if key not in months:
-            months[key] = {"total": 0, "mentioned": 0}
-        months[key]["total"] += 1
-        if r.brand_mentioned in ("Yes", "Indirect"):
-            months[key]["mentioned"] += 1
-    result = {}
-    for k, data in months.items():
-        result[k] = {**data, "rate": round(100.0 * data["mentioned"] / data["total"], 1) if data["total"] else 0}
+        key = row.timestamp.strftime("%B %Y")
+        entry = months.setdefault(key, {"total": 0, "mentioned": 0})
+        entry["total"] += 1
+        if row.is_mentioned:
+            entry["mentioned"] += 1
+
+    result = {
+        key: {**data,
+              "rate": round(100.0 * data["mentioned"] / data["total"], 1) if data["total"] else 0}
+        for key, data in months.items()
+    }
     # Sort chronologically by parsing the month string
     return dict(sorted(result.items(), key=lambda x: datetime.strptime(x[0], "%B %Y")))
 
@@ -461,16 +459,9 @@ async def run_quarterly_highlights(db: Session) -> dict:
         db, brand.user_id, brand.id, 'quarter')
     logger.info(f"Quarterly highlights check for {quarter_label}")
 
-    brand_id = brand.id
-    non_branded_qids = _get_non_branded_query_ids(db, brand_id)
+    population = _resolve_population(db, brand, start_date, end_date)
 
-    responses = db.query(Response).filter(
-        Response.brand_id == brand_id,
-        Response.timestamp >= start_date,
-        Response.timestamp <= end_date,
-    ).all()
-
-    if not responses:
+    if not population.rows:
         await send_email(
             to_email=recipient,
             subject=f"[Tales Alert] No responses found for {quarter_label}",
@@ -483,20 +474,16 @@ async def run_quarterly_highlights(db: Session) -> dict:
         )
         return {"status": "alert_sent", "reason": "no_responses", "period": quarter_label}
 
-    total, mentioned_count, mention_rate = _compute_mention_rate(responses, non_branded_qids)
-    platform_rates = _compute_platform_rates(responses, non_branded_qids)
-    sentiment, sentiment_total = _compute_sentiment(responses)
-    descriptors = _compute_descriptors(responses)
-    query_rates = _compute_query_rates(responses, non_branded_qids)
-    monthly_breakdown = _compute_monthly_breakdown(responses, non_branded_qids)
+    total, mentioned_count, mention_rate = _compute_mention_rate(population)
+    platform_rates = _compute_platform_rates(population)
+    sentiment, sentiment_total = _compute_sentiment(population)
+    descriptors = _compute_descriptors(population)
+    query_rates = _compute_query_rates(population)
+    monthly_breakdown = _compute_monthly_breakdown(population)
 
-    prev_responses = db.query(Response).filter(
-        Response.brand_id == brand_id,
-        Response.timestamp >= prev_start,
-        Response.timestamp <= prev_end,
-    ).all()
-    _, _, prev_rate = _compute_mention_rate(prev_responses, non_branded_qids)
-    prev_sentiment, _ = _compute_sentiment(prev_responses)
+    prev_population = _resolve_population(db, brand, prev_start, prev_end)
+    _, _, prev_rate = _compute_mention_rate(prev_population)
+    prev_sentiment, _ = _compute_sentiment(prev_population)
 
     fact_sheet = _build_quarterly_fact_sheet(
         quarter_label, prev_label,
@@ -567,31 +554,22 @@ async def run_monthly_highlights(db: Session) -> dict:
 
     # --- Compute verified metrics from the database ---
     brand_id = brand.id
-    non_branded_qids = _get_non_branded_query_ids(db, brand_id)
 
     # Current month responses (the report's own window)
-    responses = db.query(Response).filter(
-        Response.brand_id == brand_id,
-        Response.timestamp >= report.start_date,
-        Response.timestamp <= report.end_date,
-    ).all()
+    population = _resolve_population(db, brand, report.start_date, report.end_date)
 
-    total, mentioned_count, mention_rate = _compute_mention_rate(responses, non_branded_qids)
-    platform_rates = _compute_platform_rates(responses, non_branded_qids)
-    sentiment, sentiment_total = _compute_sentiment(responses)
-    descriptors = _compute_descriptors(responses)
-    query_rates = _compute_query_rates(responses, non_branded_qids)
+    total, mentioned_count, mention_rate = _compute_mention_rate(population)
+    platform_rates = _compute_platform_rates(population)
+    sentiment, sentiment_total = _compute_sentiment(population)
+    descriptors = _compute_descriptors(population)
+    query_rates = _compute_query_rates(population)
 
     # Previous month for comparison
     prev_start, prev_end = _get_month_before_range(report.start_date)
     prev_label = prev_start.strftime("%B %Y")
-    prev_responses = db.query(Response).filter(
-        Response.brand_id == brand_id,
-        Response.timestamp >= prev_start,
-        Response.timestamp <= prev_end,
-    ).all()
-    _, _, prev_rate = _compute_mention_rate(prev_responses, non_branded_qids)
-    prev_sentiment, _ = _compute_sentiment(prev_responses)
+    prev_population = _resolve_population(db, brand, prev_start, prev_end)
+    _, _, prev_rate = _compute_mention_rate(prev_population)
+    prev_sentiment, _ = _compute_sentiment(prev_population)
 
     # Batch-level weekly trends
     batch_analytics = db.query(BatchAnalytics).filter(

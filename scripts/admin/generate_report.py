@@ -33,6 +33,7 @@ from app.utils.timezone import now_eastern, format_eastern, format_eastern_date
 from app.models import Response, Query, Competitor, TargetDescriptor, Report, BrandInfo, User, TaskStatus, CollectionBatch, BatchAnalytics
 from app import crud, schemas
 from app.services.chart_generator import generate_all_charts
+from app.services import metrics_core, metrics_query
 from app.services.llm_provider_manager import LLMProviderManager, ProviderConfig
 from app.services.generic_llm_client import GenericLLMClient, LLMAPIError, LLMConfigurationError
 from app.services.metrics import (
@@ -348,64 +349,63 @@ def calculate_period_metrics(db, user_id: int, brand_id: int, start_date: dateti
 
     Returns:
         Dict with metrics: total_responses, mentions, mention_rate, sentiment breakdown, etc.
+
+    Every figure comes from app/services/metrics_core.py, so a report says the
+    same thing as the dashboard and the highlights email for the same window.
+
+    This previously did its own counting and disagreed on three axes: branded
+    queries were never excluded (so answers to "what is <brand> known for"
+    counted toward brand visibility), the positive_rate numerator counted
+    sentiment across ALL responses including ones where the brand was never
+    mentioned while dividing by mentions only, and 'Top 3' was reported but
+    scored nowhere.
     """
-    from sqlalchemy import func, case
+    population = metrics_query.resolve(db, metrics_query.MetricScope(
+        owner_user_id=user_id,
+        brand_id=brand_id,
+        start=start_date,
+        end=end_date,
+    ))
 
-    # Get responses in this period
-    responses = db.query(Response).filter(
-        Response.user_id == user_id,
-        Response.brand_id == brand_id,
-        Response.timestamp >= start_date,
-        Response.timestamp < end_date,
-        Response.analyzed_at.isnot(None)
-    ).all()
+    mention = metrics_core.mention_rate(population)
+    direct = metrics_core.direct_mention_rate(population)
+    total = int(mention.denominator)
 
-    total = len(responses)
     if total == 0:
         return {
             'total_responses': 0,
             'mentions': 0,
+            'indirect': 0,
             'mention_rate': 0,
-            'sentiment': {'positive': 0, 'neutral': 0, 'negative': 0},
-            'positioning': {'leader': 0, 'featured': 0, 'listed': 0}
+            'direct_mention_rate': 0,
+            'sentiment': {'very_positive': 0, 'positive': 0, 'neutral': 0,
+                          'negative': 0, 'mixed': 0, 'positive_rate': 0},
+            'positioning': {'leader': 0, 'top3': 0, 'featured': 0, 'listed': 0}
         }
 
-    # Count mentions
-    mentions = sum(1 for r in responses if r.brand_mentioned == 'Yes')
-    indirect = sum(1 for r in responses if r.brand_mentioned == 'Indirect')
-
-    # Sentiment breakdown
-    very_positive = sum(1 for r in responses if r.sentiment == 'Very Positive')
-    positive = sum(1 for r in responses if r.sentiment == 'Positive')
-    neutral = sum(1 for r in responses if r.sentiment == 'Neutral')
-    negative = sum(1 for r in responses if r.sentiment == 'Negative')
-    mixed = sum(1 for r in responses if r.sentiment == 'Mixed')
-
-    # Positioning breakdown
-    leader = sum(1 for r in responses if r.brand_position == 'Leader')
-    top3 = sum(1 for r in responses if r.brand_position == 'Top 3')
-    featured = sum(1 for r in responses if r.brand_position == 'Featured')
-    listed = sum(1 for r in responses if r.brand_position == 'Listed')
+    sentiment = metrics_core.sentiment_distribution(population)
+    positions = metrics_core.positioning_distribution(population)
+    positive = metrics_core.positive_sentiment_rate(population)
 
     return {
         'total_responses': total,
-        'mentions': mentions,
-        'indirect': indirect,
-        'mention_rate': round((mentions + indirect) / total * 100, 1) if total > 0 else 0,
-        'direct_mention_rate': round(mentions / total * 100, 1) if total > 0 else 0,
+        'mentions': int(direct.numerator),
+        'indirect': int(mention.numerator) - int(direct.numerator),
+        'mention_rate': mention.value if mention.value is not None else 0,
+        'direct_mention_rate': direct.value if direct.value is not None else 0,
         'sentiment': {
-            'very_positive': very_positive,
-            'positive': positive,
-            'neutral': neutral,
-            'negative': negative,
-            'mixed': mixed,
-            'positive_rate': round((very_positive + positive) / (mentions + indirect) * 100, 1) if (mentions + indirect) > 0 else 0
+            'very_positive': int(sentiment['Very Positive'].numerator),
+            'positive': int(sentiment['Positive'].numerator),
+            'neutral': int(sentiment['Neutral'].numerator),
+            'negative': int(sentiment['Negative'].numerator),
+            'mixed': int(sentiment['Mixed'].numerator),
+            'positive_rate': positive.value if positive.value is not None else 0,
         },
         'positioning': {
-            'leader': leader,
-            'top3': top3,
-            'featured': featured,
-            'listed': listed
+            'leader': int(positions['Leader'].numerator),
+            'top3': int(positions['Top 3'].numerator),
+            'featured': int(positions['Featured'].numerator),
+            'listed': int(positions['Listed'].numerator),
         }
     }
 

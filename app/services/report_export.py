@@ -147,7 +147,9 @@ def export_to_word_with_charts(
     title: str,
     db: Session,
     user_id: int,
-    brand_id: Optional[int] = None
+    brand_id: Optional[int] = None,
+    start_date=None,
+    end_date=None,
 ) -> io.BytesIO:
     """
     Convert markdown report to Word document with embedded chart images.
@@ -156,28 +158,34 @@ def export_to_word_with_charts(
         markdown_content: The markdown content to convert
         title: The report title
         db: Database session for fetching analytics data
-        user_id: User ID for fetching analytics data
+        user_id: User ID of the brand OWNER, not the requesting user
         brand_id: Optional brand ID for filtering data
+        start_date: Start of the report's period. Omit for all-time.
+        end_date: End of the report's period. Omit for all-time.
 
     Returns:
         BytesIO object containing the Word document with charts
     """
     import os
-    from app import analytics
     from app import models
+    from app.services import metrics_core, metrics_query
 
-    # Fetch analytics data for placeholder replacement
-    sentiment_data = analytics.get_sentiment_breakdown(db, user_id=user_id, brand_id=brand_id) or {}
-    sov_data = analytics.get_share_of_voice(db, user_id=user_id, brand_id=brand_id)
+    # Scope the substituted figures to the report's own period. These previously
+    # called the legacy analytics module with no date filter at all, so the Word
+    # export of a January report carried all-time sentiment and share of voice
+    # next to January's prose.
+    population = metrics_query.resolve(db, metrics_query.MetricScope(
+        owner_user_id=user_id,
+        brand_id=brand_id,
+        start=start_date,
+        end=end_date,
+    ))
 
-    # Handle share_of_voice being either dict or list
-    if isinstance(sov_data, list):
-        # If it's a list, we can't use it for placeholders
-        brand_sov = 0
-    elif isinstance(sov_data, dict):
-        brand_sov = sov_data.get('brand_sov', 0)
-    else:
-        brand_sov = 0
+    positive = metrics_core.positive_sentiment_rate(population)
+    positive_sentiment_rate = positive.value if positive.value is not None else 0
+
+    brand_share, _ = metrics_core.share_of_voice(population)
+    brand_sov = brand_share.value if brand_share.value is not None else 0
 
     # Get brand name
     brand_name = "Your Brand"  # Default
@@ -186,13 +194,15 @@ def export_to_word_with_charts(
         if brand:
             brand_name = brand.brand_name
 
-    # Calculate positive sentiment rate (very_positive + positive)
-    positive_sentiment_rate = sentiment_data.get('very_positive_pct', 0) + sentiment_data.get('positive_pct', 0)
+    # {descriptor_match_rate} used to be read off the sentiment breakdown dict,
+    # which has no such key, so it always substituted 0.
+    descriptor = metrics_core.descriptor_match_rate(population)
+    descriptor_match_rate = descriptor.value if descriptor.value is not None else 0
 
     # Replace placeholders in markdown content
     markdown_content = markdown_content.replace('{brand_name}', brand_name)
     markdown_content = markdown_content.replace('{positive_sentiment_rate}', str(positive_sentiment_rate))
-    markdown_content = markdown_content.replace('{descriptor_match_rate}', str(sentiment_data.get('descriptor_match_rate', 0)))
+    markdown_content = markdown_content.replace('{descriptor_match_rate}', str(descriptor_match_rate))
     markdown_content = markdown_content.replace('{share_of_voice[\'brand_sov\']}', str(brand_sov))
 
     doc = Document()

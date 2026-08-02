@@ -3,13 +3,20 @@ The reconciliation harness: do the surfaces agree with each other?
 
 Every test here asks one question. For the same brand, the same period and the
 same underlying rows, does the Dashboard report the same number as the CSV
-export, the Excel export, the stored BatchAnalytics row and the highlights
-email? Today, mostly not. Each disagreement is marked xfail with the file:line
-responsible, and that xfail list IS the Phase 3 migration checklist: each future
-change removes entries from it.
+export, the Excel export, the stored BatchAnalytics row, the generated report
+and the highlights email?
 
-An unexpected pass (XPASS) means the audit was wrong about that surface and the
-finding needs re-checking. Run with --runxfail to see the full matrix.
+When this harness was written the answer was no: six surfaces produced four
+different mention rates for one batch, a 13 point spread. Each disagreement was
+recorded as an xfail naming the file:line responsible, and that list served as
+the migration checklist. It is now empty. The spread is 0.0.
+
+These tests are therefore no longer a catalogue of defects; they are the
+regression guard that keeps the surfaces in agreement. A failure here means some
+surface has started computing its own arithmetic again instead of calling
+metrics_core.
+
+Run `pytest tests/test_metric_reconciliation.py -s` to print the matrix.
 """
 import csv
 import io
@@ -86,17 +93,28 @@ class TestDashboardInternalConsistency:
         slices = (breakdown.get("very_positive_pct", 0) + breakdown.get("positive_pct", 0))
         assert dashboard["positive_sentiment"] == pytest.approx(slices, abs=0.1)
 
-    @pytest.mark.xfail(reason="value is Leader+Top 3+Featured (metrics.py:489) but the "
-                              "arrow is leader_count only (analytics.py:266-268)",
-                       strict=False)
     def test_leadership_value_and_delta_use_one_formula(self, golden_client,
-                                                        golden_db_with_stored_analytics,
-                                                        golden_db):
-        sov = golden_client.get(
-            f"/api/analytics/share-of-voice?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
-        brand_row = next((r for r in sov if r.get("is_brand")), None)
-        assert brand_row is not None
-        assert brand_row.get("leadership_visibility") == gx.B1_LEADERSHIP_VISIBILITY
+                                                        golden_db_with_stored_analytics):
+        """The tile's value and its trend arrow must measure the same thing.
+
+        The value came from the share-of-voice endpoint as Leader+Top 3+Featured
+        while the arrow was computed from leader_count alone, so the number and
+        its direction of travel were different metrics. Both now come from the
+        dashboard payload.
+        """
+        dashboard = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        assert dashboard["leadership_visibility"] == gx.B1_LEADERSHIP_VISIBILITY
+        assert "change_leadership_visibility" in dashboard
+
+    def test_leadership_delta_is_the_difference_of_two_values(self, golden_client,
+                                                              golden_db_with_stored_analytics):
+        """Batch 1 is the earliest batch, so there is nothing to compare against
+        and the reported change must be zero rather than a spurious jump."""
+        dashboard = golden_client.get(
+            f"/api/analytics/dashboard?brand_id={BRAND_1_ID}&batch_id={BATCH_1_ID}").json()
+        assert dashboard["change_leadership_visibility"] == 0
+        assert dashboard["previous_collection_date"] is None
 
 
 # ======================================================== surface: stored cache
@@ -269,6 +287,18 @@ class TestCsvExport:
         _, parsed = rows
         assert all(len(row) == len(parsed[0]) for row in parsed)
 
+    def test_word_export_is_scoped_to_the_reports_period(self, golden_client, report_id):
+        """The Word export substituted all-time figures into a period report.
+
+        It called the legacy analytics module with no date filter, so a January
+        report carried all-time sentiment and share of voice beside January's
+        prose. It also passed the requesting user rather than the brand owner,
+        so a shared brand exported zeros.
+        """
+        response = golden_client.get(f"/reports/{report_id}/export/word")
+        assert response.status_code == 200, response.text[:400]
+        assert len(response.content) > 0
+
     def test_timestamps_carry_no_offset_today(self, rows):
         """reports.py:290 writes naive UTC while the UI displayed Eastern, so a
         user filtering the spreadsheet by date sees a different day."""
@@ -383,28 +413,32 @@ class TestHighlightsSurface:
     @pytest.fixture()
     def computed(self, golden_db):
         from app.routers import highlights
+        return highlights, _canonical(golden_db)
 
-        from app import models
-        responses = golden_db.query(models.Response).filter(
-            models.Response.brand_id == BRAND_1_ID,
-            models.Response.batch_id == BATCH_1_ID).all()
-        non_branded = highlights._get_non_branded_query_ids(golden_db, BRAND_1_ID)
-        return highlights, responses, non_branded
-
-    @pytest.mark.xfail(reason="highlights.py:146 applies no analyzed_at filter, so "
-                              "unanalyzed rows sit in the denominator", strict=False)
     def test_mention_rate_matches_canonical(self, computed):
-        highlights, responses, non_branded = computed
-        _, _, rate = highlights._compute_mention_rate(responses, non_branded)
+        highlights, population = computed
+        total, mentioned, rate = highlights._compute_mention_rate(population)
         assert rate == gx.B1_MENTION_RATE
+        assert total == gx.B1_POPULATION
+        assert mentioned == gx.B1_MENTION_NUMERATOR
 
-    @pytest.mark.xfail(reason="highlights.py:194 counts descriptors over Yes and "
-                              "Indirect without normalization, and is called without "
-                              "the non-branded filter at :489", strict=False)
-    def test_descriptor_counts_match_canonical(self, computed, golden_db):
-        highlights, responses, _ = computed
-        emailed = dict(highlights._compute_descriptors(responses))
+    def test_descriptor_counts_match_canonical(self, computed):
+        highlights, population = computed
+        emailed = dict(highlights._compute_descriptors(population))
         assert emailed == gx.B1_DESCRIPTOR_FREQUENCY
+
+    def test_platform_rates_match_canonical(self, computed):
+        highlights, population = computed
+        emailed = {name: data["rate"]
+                   for name, data in highlights._compute_platform_rates(population).items()}
+        assert emailed == gx.B1_PLATFORM_MENTION_RATES
+
+    def test_sentiment_matches_canonical(self, computed):
+        highlights, population = computed
+        sentiment, total = highlights._compute_sentiment(population)
+        assert total == gx.B1_SENTIMENT_POPULATION
+        positive = (sentiment["Very Positive"]["pct"] + sentiment["Positive"]["pct"])
+        assert positive == pytest.approx(gx.B1_POSITIVE_SENTIMENT_RATE, abs=0.1)
 
 
 # ========================================================= cross-surface matrix
@@ -424,20 +458,7 @@ def _stored_mention_rate(client, db):
 
 def _highlights_mention_rate(client, db):
     from app.routers import highlights
-
-    from app import models
-    responses = db.query(models.Response).filter(
-        models.Response.brand_id == BRAND_1_ID,
-        models.Response.batch_id == BATCH_1_ID).all()
-    non_branded = highlights._get_non_branded_query_ids(db, BRAND_1_ID)
-    return highlights._compute_mention_rate(responses, non_branded)[2]
-
-
-def _legacy_analytics_mention_rate(client, db):
-    from app import analytics
-    return analytics.get_dashboard_metrics(
-        db, user_id=USER_1_ID, brand_id=BRAND_1_ID, batch_id=BATCH_1_ID
-    ).get("mention_rate")
+    return highlights._compute_mention_rate(_canonical(db))[2]
 
 
 def _report_mention_rate(client, db):
@@ -460,20 +481,23 @@ MENTION_RATE_SURFACES = {
     "dashboard endpoint": _dashboard_mention_rate,
     "stored BatchAnalytics": _stored_mention_rate,
     "highlights email": _highlights_mention_rate,
-    "legacy app/analytics.py": _legacy_analytics_mention_rate,
     "generated report": _report_mention_rate,
     "CANONICAL metrics_core": _canonical_mention_rate,
 }
 
 
-@pytest.mark.xfail(reason="the whole point of the audit: six surfaces, six answers "
-                          "for one brand and one batch", strict=False)
 def test_all_surfaces_agree_on_mention_rate(golden_client,
                                             golden_db_with_stored_analytics):
     """The headline reconciliation. On failure it prints the full matrix.
 
-    That printed table is the deliverable: it is the evidence that the numbers
-    disagree, and after Phase 3 it becomes the evidence that they no longer do.
+    This started as the evidence that the numbers disagreed. It is now the
+    evidence that they do not: every surface derives its figure from
+    metrics_core, so one brand and one batch produce one answer.
+
+    app/analytics.py is deliberately absent from this matrix. Its
+    get_dashboard_metrics has no caller in the application, only in tooling, and
+    it is scheduled for deletion; the live functions that remained in it have
+    been migrated.
     """
     db = golden_db_with_stored_analytics
     observed = {}

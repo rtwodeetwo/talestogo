@@ -108,6 +108,12 @@ class ResponseRecord:
     analyzed: bool = True
     is_branded_query: bool = False
     query_known: bool = True
+    # Carried for surfaces that group rows themselves (per-query tables, the
+    # month-by-month breakdown in the quarterly email). Metrics here never read
+    # the timestamp: windowing is metrics_query's job, so that period boundaries
+    # are decided in exactly one place.
+    query_text: str = ""
+    timestamp: object = None
 
     @property
     def has_valid_mention(self) -> bool:
