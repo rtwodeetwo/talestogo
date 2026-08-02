@@ -60,12 +60,16 @@ def get_positioning_trend_cached(
     for batch_analytics in analytics:
         total = batch_analytics.total_responses
         if total > 0:
+            # 'Top 3' is reported as its own series. It used to be dropped
+            # entirely at the storage layer, so these percentages did not sum to
+            # 100 and a Top 3 placement simply vanished from the trend.
             trend_data.append({
                 'date': batch_analytics.collection_date,
-                'leader': round((batch_analytics.leader_count / total) * 100),
-                'featured': round((batch_analytics.featured_count / total) * 100),
-                'listed': round((batch_analytics.listed_count / total) * 100),
-                'not_mentioned': round((batch_analytics.not_mentioned_count / total) * 100)
+                'leader': round((batch_analytics.leader_count / total) * 100, 1),
+                'top_3': round(((batch_analytics.top3_count or 0) / total) * 100, 1),
+                'featured': round((batch_analytics.featured_count / total) * 100, 1),
+                'listed': round((batch_analytics.listed_count / total) * 100, 1),
+                'not_mentioned': round((batch_analytics.not_mentioned_count / total) * 100, 1)
             })
 
     return trend_data
@@ -89,17 +93,20 @@ def get_sentiment_trend_cached(
 
     trend_data = []
     for batch_analytics in analytics:
-        # Sentiment is calculated based on mentions only
-        mention_count = batch_analytics.mention_count
-        if mention_count > 0:
+        # Divide by the population the sentiment counts were taken from, not by
+        # mention_count. mention_count includes Indirect mentions, which carry no
+        # sentiment, so using it meant these slices never summed to 100 even
+        # though they are charted as a 100% stacked distribution.
+        base = batch_analytics.sentiment_base_count
+        if base:
             trend_data.append({
                 'date': batch_analytics.collection_date,
-                'very_positive': round((batch_analytics.very_positive_count / mention_count) * 100),
-                'positive': round((batch_analytics.positive_count / mention_count) * 100),
-                'neutral': round((batch_analytics.neutral_count / mention_count) * 100),
-                'negative': round((batch_analytics.negative_count / mention_count) * 100),
-                'very_negative': round((batch_analytics.very_negative_count / mention_count) * 100),
-                'mixed': round((batch_analytics.mixed_count / mention_count) * 100)
+                'very_positive': round((batch_analytics.very_positive_count / base) * 100, 1),
+                'positive': round((batch_analytics.positive_count / base) * 100, 1),
+                'neutral': round((batch_analytics.neutral_count / base) * 100, 1),
+                'negative': round((batch_analytics.negative_count / base) * 100, 1),
+                'very_negative': round((batch_analytics.very_negative_count / base) * 100, 1),
+                'mixed': round((batch_analytics.mixed_count / base) * 100, 1)
             })
 
     return trend_data

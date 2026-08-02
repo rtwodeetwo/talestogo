@@ -283,12 +283,18 @@ class BatchAnalyticsBase(BaseModel):
     batch_id: int
     collection_date: datetime.datetime
     total_responses: int = 0
+    analyzed_count: int = 0
+    unanalyzed_count: int = 0
+    invalid_count: int = 0
     mention_count: int = 0
+    direct_mention_count: int = 0
     mention_rate: float = 0.0
     leader_count: int = 0
+    top3_count: int = 0
     featured_count: int = 0
     listed_count: int = 0
     not_mentioned_count: int = 0
+    sentiment_base_count: int = 0
     very_positive_count: int = 0
     positive_count: int = 0
     neutral_count: int = 0

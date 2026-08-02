@@ -2,33 +2,35 @@
 """
 Database Migration Runner for Tales Project
 
-This script runs SQL migration files in order to update the database schema
-and clean up orphaned data.
+Runs the SQL migration files in this directory in order, tracking what has
+already been applied in a schema_migrations table.
+
+Works against both SQLite and PostgreSQL. It previously used sqlite3 directly,
+which meant migrations could not be applied to a production Postgres deployment
+at all. Connections now go through SQLAlchemy, so the target is whatever
+DATABASE_URL points at, exactly like the application itself.
 
 Usage:
-    python run_migrations.py [--db-path path/to/tales.db] [--migration 001]
+    python run_migrations.py [--database-url URL | --db-path path/to/tales.db]
 
 Options:
-    --db-path: Path to SQLite database file (default: ../tales.db)
-    --migration: Specific migration to run (e.g., 001, 002). If not specified, runs all.
-    --dry-run: Show what would be executed without actually running it
-    --backup: Create backup before running (default: True, use --no-backup to disable)
+    --database-url: SQLAlchemy URL. Defaults to $DATABASE_URL, then to the local
+                    SQLite file.
+    --db-path: Path to a SQLite database file (shorthand for a sqlite:/// URL).
+    --migration: Specific migration to run (e.g. 001). If omitted, runs all.
+    --dry-run: Show what would be executed without running it.
+    --no-backup: Skip the pre-migration backup.
+
+Backups are only automatic for SQLite, where the database is a single file. On
+PostgreSQL the script refuses to invent a backup strategy and instead prints the
+pg_dump command to run first; pass --no-backup once you have taken one.
 
 Examples:
-    # Run all migrations with automatic backup
     python run_migrations.py
-
-    # Run specific migration
-    python run_migrations.py --migration 001
-
-    # Run on specific database file
-    python run_migrations.py --db-path /path/to/database.db
-
-    # Dry run to see what would happen
-    python run_migrations.py --dry-run
+    python run_migrations.py --migration 003
+    python run_migrations.py --database-url postgresql://user@host/tales --dry-run
 """
 
-import sqlite3
 import os
 import sys
 import argparse
@@ -36,23 +38,77 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
-# Migration tracking table
-MIGRATION_TABLE_SQL = """
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
+# Migration tracking table. AUTOINCREMENT is SQLite-only and SERIAL is
+# Postgres-only, so the identity column is spelled per dialect.
+MIGRATION_TABLE_SQL = {
+    "sqlite": """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     migration_name VARCHAR(255) NOT NULL UNIQUE,
-    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-"""
+""",
+    "postgresql": """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id SERIAL PRIMARY KEY,
+    migration_name VARCHAR(255) NOT NULL UNIQUE,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""",
+}
 
-def get_db_path(custom_path=None):
-    """Get the database file path."""
-    if custom_path:
-        return Path(custom_path)
 
-    # Default: look for tales.db in parent directory
-    script_dir = Path(__file__).parent
-    return script_dir.parent / "tales.db"
+def resolve_database_url(database_url=None, db_path=None):
+    """Work out which database to migrate.
+
+    Precedence: explicit --database-url, then --db-path, then $DATABASE_URL,
+    then the local SQLite file. The $DATABASE_URL branch is what makes this
+    usable against a deployed Postgres instance.
+    """
+    if database_url:
+        return database_url
+    if db_path:
+        return f"sqlite:///{Path(db_path).resolve()}"
+
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        # Render and Heroku still hand out the legacy postgres:// scheme.
+        if env_url.startswith("postgres://"):
+            env_url = env_url.replace("postgres://", "postgresql://", 1)
+        return env_url
+
+    default_path = Path(__file__).parent.parent / "tales.db"
+    return f"sqlite:///{default_path}"
+
+
+def sqlite_path_from_url(url):
+    """The on-disk path for a SQLite URL, or None for any other dialect."""
+    if not url.startswith("sqlite:///"):
+        return None
+    path = url[len("sqlite:///"):]
+    if not path or path.startswith(":memory:") or path.startswith("file:"):
+        return None
+    return Path(path)
+
+
+def split_sql_statements(sql):
+    """Split a migration file into individual statements.
+
+    sqlite3's executescript() ran a whole file in one call; SQLAlchemy has no
+    equivalent, so statements are split here. Line comments are stripped first
+    so a semicolon inside a comment cannot split a statement.
+    """
+    lines = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
+    return [stmt.strip() for stmt in cleaned.split(";") if stmt.strip()]
 
 def backup_database(db_path):
     """Create a backup of the database."""
@@ -72,20 +128,17 @@ def get_migration_files():
 
 def has_migration_been_applied(conn, migration_name):
     """Check if a migration has already been applied."""
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE migration_name = ?",
-        (migration_name,)
+    result = conn.execute(
+        text("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = :name"),
+        {"name": migration_name},
     )
-    count = cursor.fetchone()[0]
-    return count > 0
+    return result.scalar() > 0
 
 def mark_migration_applied(conn, migration_name):
     """Mark a migration as applied."""
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO schema_migrations (migration_name) VALUES (?)",
-        (migration_name,)
+    conn.execute(
+        text("INSERT INTO schema_migrations (migration_name) VALUES (:name)"),
+        {"name": migration_name},
     )
     conn.commit()
 
@@ -110,17 +163,20 @@ def run_migration_file(conn, migration_file, dry_run=False):
         return True
 
     try:
-        # Execute the SQL
-        cursor = conn.cursor()
-        cursor.executescript(sql)
+        for statement in split_sql_statements(sql):
+            # BEGIN/COMMIT in the file would fight SQLAlchemy's own transaction
+            # handling, so they are skipped; each file runs in one transaction.
+            if statement.upper() in ("BEGIN TRANSACTION", "BEGIN", "COMMIT"):
+                continue
+            conn.execute(text(statement))
 
-        # Mark as applied
         mark_migration_applied(conn, migration_name)
 
         print(f"✓ Migration {migration_name} applied successfully")
         return True
 
-    except Exception as e:
+    except SQLAlchemyError as e:
+        conn.rollback()
         print(f"✗ Migration {migration_name} failed: {e}")
         return False
 
@@ -129,8 +185,6 @@ def verify_database(conn):
     print("\n" + "="*60)
     print("VERIFICATION: Checking for orphaned data...")
     print("="*60)
-
-    cursor = conn.cursor()
 
     tables_to_check = [
         'queries', 'responses', 'competitors', 'target_descriptors',
@@ -141,16 +195,18 @@ def verify_database(conn):
     all_clean = True
     for table in tables_to_check:
         try:
-            cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL")  # nosec B608 — table is from a hardcoded whitelist, not user input
-            count = cursor.fetchone()[0]
+            count = conn.execute(
+                text(f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL")  # nosec B608 - table is from a hardcoded whitelist, not user input
+            ).scalar()
 
             if count > 0:
                 print(f"⚠ WARNING: {table} has {count} records with NULL user_id")
                 all_clean = False
             else:
                 print(f"✓ {table}: No orphaned records")
-        except sqlite3.OperationalError:
+        except SQLAlchemyError:
             # Table might not exist yet
+            conn.rollback()
             print(f"⊘ {table}: Table does not exist (skipped)")
 
     if all_clean:
@@ -167,8 +223,12 @@ def main():
         epilog=__doc__
     )
     parser.add_argument(
+        '--database-url',
+        help='SQLAlchemy URL (default: $DATABASE_URL, then the local SQLite file)'
+    )
+    parser.add_argument(
         '--db-path',
-        help='Path to SQLite database file (default: ../tales.db)'
+        help='Path to SQLite database file (shorthand for a sqlite:/// URL)'
     )
     parser.add_argument(
         '--migration',
@@ -192,26 +252,36 @@ def main():
 
     args = parser.parse_args()
 
-    # Get database path
-    db_path = get_db_path(args.db_path)
+    database_url = resolve_database_url(args.database_url, args.db_path)
+    db_path = sqlite_path_from_url(database_url)
 
-    if not db_path.exists():
+    if db_path is not None and not db_path.exists():
         print(f"✗ Database file not found: {db_path}")
-        print(f"  Please specify correct path with --db-path")
+        print(f"  Please specify the correct path with --db-path")
+        return 1
+
+    engine = create_engine(database_url)
+    dialect = engine.dialect.name
+    if dialect not in MIGRATION_TABLE_SQL:
+        print(f"✗ Unsupported database dialect: {dialect}")
+        print(f"  Supported: {', '.join(sorted(MIGRATION_TABLE_SQL))}")
         return 1
 
     print("="*60)
     print("TALES PROJECT - DATABASE MIGRATION TOOL")
     print("="*60)
-    print(f"Database: {db_path}")
+    # Never print the URL itself: it carries the password on PostgreSQL.
+    print(f"Database: {db_path if db_path else f'{dialect} (from DATABASE_URL)'}")
+    print(f"Dialect:  {dialect}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'EXECUTE'}")
     print("="*60)
 
-    # Connect to database
-    conn = sqlite3.connect(db_path)
+    conn = engine.connect()
 
     # Create migration tracking table
-    conn.executescript(MIGRATION_TABLE_SQL)
+    for statement in split_sql_statements(MIGRATION_TABLE_SQL[dialect]):
+        conn.execute(text(statement))
+    conn.commit()
 
     # Verify only mode
     if args.verify_only:
@@ -221,8 +291,19 @@ def main():
 
     # Create backup (unless disabled or dry run)
     if not args.no_backup and not args.dry_run:
-        backup_path = backup_database(db_path)
-        print(f"Backup saved to: {backup_path}")
+        if db_path is not None:
+            backup_path = backup_database(db_path)
+            print(f"Backup saved to: {backup_path}")
+        else:
+            # A file copy is meaningless for a server-hosted database, and
+            # silently skipping the backup would be worse than stopping.
+            print("✗ Refusing to run without a backup on a non-SQLite database.")
+            print("  Take one first, for example:")
+            print("    pg_dump \"$DATABASE_URL\" > tales_backup_"
+                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql")
+            print("  Then re-run with --no-backup.")
+            conn.close()
+            return 1
 
     # Get migration files
     migration_files = get_migration_files()

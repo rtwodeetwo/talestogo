@@ -161,20 +161,38 @@ class BatchAnalytics(Base):
     # Collection date (from batch)
     collection_date = Column(DateTime, nullable=False, index=True)
 
-    # Overall metrics
+    # Overall metrics. total_responses is the metric DENOMINATOR: analyzed,
+    # valid-enum, non-branded responses. Rows excluded from it are counted
+    # separately below rather than folded into not_mentioned_count.
     total_responses = Column(Integer, default=0)
 
+    # Rows in the batch that never made it into total_responses, so a failed
+    # collection or analysis pass is visible instead of looking like a drop in
+    # brand visibility.
+    analyzed_count = Column(Integer, default=0)
+    unanalyzed_count = Column(Integer, default=0)
+    invalid_count = Column(Integer, default=0)
+
     # Brand mentions (excluding brand_in_query responses)
-    mention_count = Column(Integer, default=0)
+    mention_count = Column(Integer, default=0)         # Yes + Indirect, organic
+    direct_mention_count = Column(Integer, default=0)  # Yes only, organic
     mention_rate = Column(Float, default=0.0)
 
-    # Positioning breakdown
+    # Positioning breakdown. These five must sum to total_responses; 'Top 3' was
+    # missing before, so they could not.
     leader_count = Column(Integer, default=0)
+    top3_count = Column(Integer, default=0)
     featured_count = Column(Integer, default=0)
     listed_count = Column(Integer, default=0)
     not_mentioned_count = Column(Integer, default=0)
 
-    # Sentiment breakdown (all responses where brand is mentioned)
+    # Sentiment breakdown. These divide by sentiment_base_count, NOT by
+    # mention_count. Different population: sentiment deliberately includes
+    # answers to questions that named the brand, and excludes direct mentions
+    # carrying no sentiment value. Dividing by mention_count (which includes
+    # Indirect mentions that have no sentiment) is why the slices never summed
+    # to 100 before.
+    sentiment_base_count = Column(Integer, default=0)
     very_positive_count = Column(Integer, default=0)
     positive_count = Column(Integer, default=0)
     neutral_count = Column(Integer, default=0)
@@ -188,7 +206,10 @@ class BatchAnalytics(Base):
     # Descriptor usage (JSON storing {descriptor: count})
     descriptor_data = Column(Text, nullable=True)  # JSON string
 
-    # Metadata
+    # Metadata. metrics_version tags which definition wrote this row, so a stale
+    # row left over from the pre-audit implementation is distinguishable from a
+    # recomputed one.
+    metrics_version = Column(String(16), nullable=True)
     computed_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

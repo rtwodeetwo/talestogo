@@ -108,27 +108,50 @@ class TestStoredBatchAnalytics:
         return golden_db_with_stored_analytics.query(models.BatchAnalytics).filter(
             models.BatchAnalytics.batch_id == BATCH_1_ID).first()
 
-    @pytest.mark.xfail(reason="batch_analytics.py:104-105 counts unanalyzed rows in "
-                              "not_mentioned_count", strict=False)
     def test_mention_rate_matches_canonical(self, stored):
         assert stored.mention_rate == gx.B1_MENTION_RATE
 
-    @pytest.mark.xfail(reason="batch_analytics.py:98-103 never buckets 'Top 3', so the "
-                              "position counts cannot sum to the total", strict=False)
     def test_position_counts_sum_to_total(self, stored):
-        counted = (stored.leader_count + stored.featured_count
+        """All five buckets, including Top 3, must account for the population."""
+        counted = (stored.leader_count + stored.top3_count + stored.featured_count
                    + stored.listed_count + stored.not_mentioned_count)
         assert counted == stored.total_responses
 
-    @pytest.mark.xfail(reason="BatchAnalytics has no top3_count column (models.py:161-165)",
-                       strict=False)
     def test_top_3_is_recorded(self, stored):
-        assert getattr(stored, "top3_count", None) == gx.B1_POSITION_COUNTS["Top 3"]
+        assert stored.top3_count == gx.B1_POSITION_COUNTS["Top 3"]
 
-    def test_stored_rate_is_an_integer_today(self, stored):
-        """Documents the precision loss: batch_analytics.py:135 rounds to int
-        while analytics_cache.py:661 rounds to 2 decimals for the same concept."""
-        assert stored.mention_rate == int(stored.mention_rate)
+    def test_total_responses_is_the_metric_denominator(self, stored):
+        """Not a row count for the batch. Excluded rows are reported separately
+        rather than folded into not_mentioned_count."""
+        assert stored.total_responses == gx.B1_POPULATION
+        assert stored.unanalyzed_count == gx.B1_UNANALYZED_EXCLUDED
+        assert stored.invalid_count == gx.B1_INVALID_ENUM_EXCLUDED
+
+    def test_sentiment_counts_sum_to_their_own_base(self, stored):
+        """sentiment_base_count is what the sentiment counts divide by.
+
+        Previously sentiment percentages were derived from mention_count, which
+        includes Indirect mentions carrying no sentiment, so the slices could
+        never sum to 100. The base is its own population: it includes answers to
+        branded questions, which the visibility metrics exclude.
+        """
+        slices = (stored.very_positive_count + stored.positive_count
+                  + stored.neutral_count + stored.negative_count
+                  + stored.very_negative_count + stored.mixed_count)
+        assert slices == stored.sentiment_base_count == gx.B1_SENTIMENT_POPULATION
+
+    def test_visibility_counts_are_organic_only(self, stored):
+        assert stored.direct_mention_count <= stored.mention_count
+        assert stored.mention_count <= stored.total_responses
+
+    def test_precision_is_preserved(self, stored):
+        """batch_analytics.py used to round to int while analytics_cache.py
+        rounded to 2 decimals for the same concept."""
+        assert stored.mention_rate == pytest.approx(gx.B1_MENTION_RATE, abs=0.05)
+
+    def test_row_is_tagged_with_the_definition_that_wrote_it(self, stored):
+        from app.services.batch_analytics import METRICS_VERSION
+        assert stored.metrics_version == METRICS_VERSION
 
 
 # ========================================================== surface: CSV export
