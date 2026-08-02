@@ -6,6 +6,13 @@
 #
 # Exits non-zero if anything needs attention, so it can gate CI.
 #
+# A scan that COULD NOT RUN is reported separately from a scan that FOUND
+# SOMETHING, and the two are never merged into one "FAIL". They mean opposite
+# things: findings are work to do, an error is a gate that is not actually
+# guarding anything. A security check that reports "problem" when it really
+# means "I did not look" is worse than no check, because it trains everyone to
+# ignore it. Both still fail the run; only the wording and the summary differ.
+#
 # The suppressions this relies on are deliberately narrow and documented at
 # each site: bandit exclusions and skips live in pyproject.toml, and semgrep
 # suppressions are inline "# nosemgrep: <rule-id>" comments with a reason.
@@ -14,27 +21,63 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-status=0
+findings=0
+errors=0
 note() { printf '\n=== %s ===\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1"; status=1; }
-pass() { printf '  ok: %s\n' "$1"; }
+fail()  { printf '  FINDINGS: %s\n' "$1"; findings=1; }
+error() { printf '  COULD NOT RUN: %s\n' "$1"; errors=1; }
+pass()  { printf '  ok: %s\n' "$1"; }
 
-# Semgrep downloads its rulesets over HTTPS. On the PPPL network the Zscaler
-# proxy intercepts TLS with a certificate Python does not trust, so the fetch
-# dies with SSLCertVerificationError. Going direct works.
-semgrep_direct() {
-  env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy semgrep "$@"
+# ---------------------------------------------------------------- semgrep
+#
+# By default the rule packs are fetched from semgrep's registry. On a network
+# with a TLS-intercepting proxy that fetch fails, and no CA bundle fixes it (see
+# scripts/fetch_semgrep_rules.sh for why). Set SEMGREP_RULES_DIR to a directory
+# of downloaded packs to scan without touching the network.
+SEMGREP_RULES_DIR="${SEMGREP_RULES_DIR:-}"
+
+if [ -n "$SEMGREP_RULES_DIR" ]; then
+  SEMGREP_PACKS=()
+  for pack in python javascript secrets; do
+    if [ -f "$SEMGREP_RULES_DIR/$pack.yaml" ]; then
+      SEMGREP_PACKS+=(--config="$SEMGREP_RULES_DIR/$pack.yaml")
+    fi
+  done
+  printf 'semgrep: using local rules from %s\n' "$SEMGREP_RULES_DIR"
+else
+  SEMGREP_PACKS=(--config=p/python --config=p/javascript --config=p/secrets)
+fi
+
+# Rule ids are prefixed with the config path when rules are loaded from files,
+# so the same rule has two names depending on how it was loaded. Both are passed
+# wherever the rule is named; an id that matches nothing is harmless.
+SQL_TEXT_RULE='python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text'
+SQL_TEXT_RULE_LOCAL="semgrep-rules.$SQL_TEXT_RULE"
+
+# semgrep: 0 = clean, 1 = findings, >=2 = the scan itself failed.
+run_semgrep() {
+  local label="$1"; shift
+  local output
+  output=$(semgrep scan "$@" --metrics=off --error --quiet 2>&1)
+  local code=$?
+  case "$code" in
+    0) pass "$label: no findings" ;;
+    1) printf '%s\n' "$output"; fail "$label" ;;
+    *) printf '%s\n' "$output" | tail -5
+       error "$label: semgrep exited $code before scanning (rules could not be "\
+"loaded, or the scan crashed). See scripts/fetch_semgrep_rules.sh." ;;
+  esac
 }
 
-SEMGREP_PACKS=(--config=p/python --config=p/javascript --config=p/secrets)
-SQL_TEXT_RULE='python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text'
-
 note "bandit (Python SAST)"
-if bandit -c pyproject.toml -r app scripts -q; then
-  pass "no findings"
-else
-  fail "bandit reported findings (see above)"
-fi
+bandit_out=$(bandit -c pyproject.toml -r app scripts -q 2>&1)
+bandit_code=$?
+case "$bandit_code" in
+  0) pass "no findings" ;;
+  1) printf '%s\n' "$bandit_out"; fail "bandit reported findings" ;;
+  *) printf '%s\n' "$bandit_out" | tail -10
+     error "bandit exited $bandit_code without completing a scan" ;;
+esac
 
 # Belt and braces for the B404/B603 skips in pyproject.toml: those turn off the
 # noisy "you imported subprocess" and "you called subprocess safely" checks, so
@@ -48,22 +91,15 @@ fi
 
 # app/ is the deployed request-handling surface: every rule, no exclusions.
 note "semgrep (app/, all rules)"
-if semgrep_direct scan "${SEMGREP_PACKS[@]}" --error --quiet --metrics=off app; then
-  pass "no findings"
-else
-  fail "semgrep reported findings in app/"
-fi
+run_semgrep "app/" "${SEMGREP_PACKS[@]}" app
 
 # Offline migration and maintenance scripts. These must issue raw DDL, which
 # the SQLAlchemy ORM cannot express, so that one rule is dropped here. Every
 # other rule (including secret detection) still applies.
 note "semgrep (migrations/, scripts/, tests/ minus raw-SQL rule)"
-if semgrep_direct scan "${SEMGREP_PACKS[@]}" --error --quiet --metrics=off \
-     --exclude-rule "$SQL_TEXT_RULE" migrations scripts tests; then
-  pass "no findings"
-else
-  fail "semgrep reported findings in offline scripts"
-fi
+run_semgrep "offline scripts" "${SEMGREP_PACKS[@]}" \
+  --exclude-rule "$SQL_TEXT_RULE" --exclude-rule "$SQL_TEXT_RULE_LOCAL" \
+  migrations scripts tests
 
 # Two advisories have no fixed release we can take. Both are documented, with
 # the reachability argument, in docs/SECURITY_NOTES.md. They are listed here so
@@ -92,8 +128,15 @@ fi
 note "pip-audit (Python dependencies)"
 pip_ignore=()
 for v in "${PIP_ACCEPTED[@]}"; do pip_ignore+=(--ignore-vuln "$v"); done
-if pip-audit -r requirements.txt "${pip_ignore[@]}"; then
+pip_out=$(pip-audit -r requirements.txt "${pip_ignore[@]}" 2>&1)
+pip_code=$?
+printf '%s\n' "$pip_out"
+if [ "$pip_code" -eq 0 ]; then
   pass "no unaccepted vulnerabilities (accepted: ${PIP_ACCEPTED[*]})"
+elif printf '%s' "$pip_out" | grep -qiE 'connection|timed out|resolve|ssl|network'; then
+  # An audit that could not reach its advisory database has not cleared
+  # anything, and must not be read as "one vulnerable dependency".
+  error "pip-audit could not reach the advisory database"
 else
   fail "vulnerable Python dependencies"
 fi
@@ -102,10 +145,16 @@ note "npm audit (frontend dependencies)"
 # `npm audit` exits non-zero whenever any advisory exists, which under pipefail
 # would fail the pipeline before the allowlist below is consulted. Swallow its
 # status and let the filter decide.
-if (cd frontend && { npm audit --json 2>/dev/null || true; } | python3 -c '
+npm_out=$(cd frontend && { npm audit --json 2>/dev/null || true; } | python3 -c '
 import json, sys
 accepted = set(sys.argv[1:])
-report = json.load(sys.stdin)
+try:
+    report = json.load(sys.stdin)
+except ValueError:
+    # No parseable report means the audit did not run. Exit 2 so the caller can
+    # tell that apart from "advisories were found".
+    print("  npm audit produced no report")
+    sys.exit(2)
 found = set()
 for vuln in report.get("vulnerabilities", {}).values():
     for src in vuln.get("via", []):
@@ -118,16 +167,23 @@ still_accepted = sorted(found & accepted)
 if still_accepted:
     print("  accepted, still present: " + ", ".join(still_accepted))
 sys.exit(1 if unexpected else 0)
-' "${NPM_ACCEPTED[@]}"); then
-  pass "no unaccepted advisories"
-else
-  fail "unaccepted npm advisories (see docs/SECURITY_NOTES.md)"
-fi
+' "${NPM_ACCEPTED[@]}" 2>&1)
+npm_code=$?
+printf '%s\n' "$npm_out"
+case "$npm_code" in
+  0) pass "no unaccepted advisories" ;;
+  1) fail "unaccepted npm advisories (see docs/SECURITY_NOTES.md)" ;;
+  *) error "npm audit did not produce a report" ;;
+esac
 
 note "result"
-if [ "$status" -eq 0 ]; then
-  echo "  All scans clean."
-else
-  echo "  One or more scans need attention."
+if [ "$errors" -ne 0 ]; then
+  echo "  One or more scans COULD NOT RUN. Nothing was cleared by them."
 fi
-exit "$status"
+if [ "$findings" -ne 0 ]; then
+  echo "  One or more scans reported findings."
+fi
+if [ "$errors" -eq 0 ] && [ "$findings" -eq 0 ]; then
+  echo "  All scans ran, all clean."
+fi
+[ "$errors" -eq 0 ] && [ "$findings" -eq 0 ]

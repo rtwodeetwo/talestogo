@@ -300,6 +300,37 @@ the configured analysis LLM provider. Quarter labels follow the brand's
 
 ---
 
+## Investigations (Optional)
+
+An investigation explains why the metrics moved between two periods. After each
+collection, Tales checks whether anything moved past a threshold and, if so,
+opens one by itself. This is on by default.
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `INVESTIGATIONS_AUTO_TRIGGER` | No | Set to `false` to disable automatic investigations. Manual ones from the UI still work. | `true` |
+| `INVESTIGATION_THRESHOLD_MENTION_RATE` | No | Percentage points of movement that opens an investigation | `10.0` |
+| `INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE` | No | As above, for positive sentiment | `15.0` |
+| `INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY` | No | As above, for leadership visibility | `15.0` |
+| `INVESTIGATION_THRESHOLD_SHARE_OF_VOICE` | No | As above, for the brand's share of voice and for any single competitor's | `10.0` |
+
+Notes:
+
+- Investigations need an LLM provider that supports tool use: Anthropic, OpenAI,
+  Azure OpenAI, Google Gemini, or an OpenAI-compatible endpoint. Perplexity's
+  `sonar` models cannot run one. Whichever provider is configured and enabled is
+  used, so upgrading a model under Admin, LLM Providers upgrades investigations
+  too.
+- Web search is optional. Without a grounded provider an investigation still
+  runs on the collected data and records, in its own limitations panel, that
+  external causes could not be checked. That is reported as information, not as
+  a failure.
+- The first collection of a new month is what closes out the previous one, so
+  that is when a month-over-month investigation fires. A period that already has
+  an investigation will not get a second one.
+
+---
+
 ## Frontend Build Variables
 
 These are optional and only used when building the frontend (during Docker build).

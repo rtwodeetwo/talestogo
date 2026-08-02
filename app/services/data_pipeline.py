@@ -143,6 +143,12 @@ def run_analysis_only(
             except Exception as e:
                 print(f"Warning: Failed to recompute batch analytics: {e}")
 
+            # Fresh analysis may have closed out a period. check_after_collection
+            # cannot raise, so a collection is never reported as failed because
+            # the follow-up investigation could not start.
+            from app.services.investigation.triggers import check_after_collection
+            check_after_collection(db, data_owner_user_id, brand_id)
+
             return {
                 "success": True,
                 "message": f"Analysis completed",
@@ -627,6 +633,14 @@ def run_collection_and_analysis(
             except Exception as e:
                 print(f"Warning: Failed to recompute batch analytics: {e}")
                 # Don't fail the pipeline if analytics recompute fails
+
+            # === STEP 2.6: AUTO-TRIGGER AN INVESTIGATION IF ANYTHING MOVED ===
+            # The first batch of a new month is what closes out the previous
+            # one, so this is where a month-over-month trigger fires. It cannot
+            # raise: a successful collection must not be reported as failed
+            # because the follow-up analysis of it could not start.
+            from app.services.investigation.triggers import check_after_collection
+            check_after_collection(db_thread, data_owner_user_id, brand_id)
 
             # === STEP 3: SEND COMPLETION EMAIL ===
             user_obj = db_thread.query(models.User).filter_by(id=user_id).first()

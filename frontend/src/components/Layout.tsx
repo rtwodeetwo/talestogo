@@ -40,6 +40,7 @@ import {
   Business as BusinessIcon,
   Storage as StorageIcon,
   SmartToy as LLMIcon,
+  Search as InvestigationIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -135,6 +136,7 @@ export default function Layout({ children }: LayoutProps) {
     { text: 'Descriptors', icon: <DescriptorIcon />, path: '/analytics/descriptors', indent: true },
     { text: 'Sentiment', icon: <SentimentIcon />, path: '/analytics/sentiment', indent: true },
     { text: 'Threats', icon: <WarningIcon />, path: '/analytics/threats', indent: true },
+    { text: 'Investigations', icon: <InvestigationIcon />, path: '/analytics/investigations', indent: true },
     { text: 'Data Exports', icon: <ReportIcon />, path: '/exports', indent: false },
     { text: 'How Tales Works', icon: <InfoIcon />, path: '/how-tales-works', indent: false },
   ];

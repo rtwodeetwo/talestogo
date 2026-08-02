@@ -124,3 +124,7 @@ SAST_Remediation_Summary_PNNL.docx
 /send_*.py
 /query_*.py
 /start_tales.sh
+
+# Locally downloaded semgrep rule packs (see scripts/fetch_semgrep_rules.sh).
+# Not committed: the scan should use semgrep's current rules, not a frozen copy.
+.semgrep-rules/

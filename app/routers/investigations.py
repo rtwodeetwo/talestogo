@@ -6,9 +6,11 @@ The dashboard says the mention rate fell; an investigation drills into which
 queries and platforms moved, reads the answers, and writes up findings.
 
 Endpoints here own the record and its lifecycle. The agent loop that fills in
-the findings lives in app/services/investigation/; until it is wired up, a
-triggered investigation stays 'pending' and its evidence can be inspected
-through the preview endpoint.
+the findings lives in app/services/investigation/service.py and runs on a
+bounded worker pool, so a trigger returns 202 immediately and the client polls.
+The evidence endpoint returns the same figures the agent is given, with no model
+involved, so an investigation's inputs can be checked independently of its
+conclusions.
 """
 import datetime
 import json
@@ -21,7 +23,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import get_current_user
 from ..database import get_db
-from ..services.investigation import evidence
+from ..services.investigation import evidence, service
 from ..services.investigation.scope import (
     DEFAULT_COMPARISON_MODE,
     ScopeError,
@@ -129,6 +131,11 @@ def trigger_investigation(
     logger.info(
         "Investigation %s queued for brand %s: %s vs %s",
         investigation.id, brand_id, scope.current_label, scope.previous_label)
+
+    # Queued rather than run inline: an investigation takes minutes. The record
+    # exists and is already 'pending', so a pool that is momentarily full delays
+    # the run without losing it.
+    service.submit(investigation.id)
 
     return {
         "investigation_id": investigation.id,

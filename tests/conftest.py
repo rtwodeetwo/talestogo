@@ -18,6 +18,25 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 
 
+@pytest.fixture(scope="function", autouse=True)
+def queued_investigations(monkeypatch):
+    """Stop any test from spawning a real investigation worker.
+
+    service.submit() hands the run to a thread that opens its own SessionLocal
+    against the configured DATABASE_URL. In a test run that means talking to
+    (and creating) a database outside the fixture, which is how test runs came
+    to be writing files into the repo root in the first place.
+
+    Yields the list of investigation ids that would have been queued, so a test
+    can assert that a trigger fired without anything actually running.
+    """
+    from app.services.investigation import service
+
+    queued = []
+    monkeypatch.setattr(service, "submit", queued.append)
+    return queued
+
+
 @pytest.fixture(scope="function")
 def golden_engine():
     """Engine bound to a fresh in-memory database holding the golden dataset."""

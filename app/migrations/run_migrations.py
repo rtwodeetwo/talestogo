@@ -196,6 +196,7 @@ def verify_database(conn):
     for table in tables_to_check:
         try:
             count = conn.execute(
+                # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text,semgrep-rules.python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text - `table` comes from the hardcoded tables_to_check list above; no request data reaches this string, and a table name cannot be a bound parameter.
                 text(f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL")  # nosec B608 - table is from a hardcoded whitelist, not user input
             ).scalar()
 

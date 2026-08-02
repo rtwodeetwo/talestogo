@@ -238,30 +238,96 @@ root.
 
 #### Investigations (new feature, partially built)
 
-Phases A and B are merged: the record, its lifecycle, and a deterministic
-evidence pack of 8 tools over `metrics_core`. No LLM is called yet.
-**Phases C (agent loop), D (frontend) and E (auto-triggers) remain — the full
-spec is in `docs/INVESTIGATIONS_DESIGN.md`.**
+Phases A and B were merged this session: the record, its lifecycle, and a
+deterministic evidence pack of 8 tools over `metrics_core`. No LLM was called
+yet. Phases C, D and E were completed in session 5, below.
+
+### Session 5: 2026-08-01 — Investigations C/D/E, SAST that tells the truth
+
+Same branch, `audit/metrics-reconciliation`. Tests: **337 passing** (up from
+284). Backend imports at 170 routes, frontend builds, all scans clean.
+
+#### Investigations, Phases C, D and E
+
+Full spec, as built, is in `docs/INVESTIGATIONS_DESIGN.md`.
+
+- **Phase C, the agent loop.** `app/services/investigation/service.py`, plus
+  `agent_client.py` (tool-use adapters for the Anthropic, OpenAI and Google
+  dialects) and `search.py` (one scoped web-search tool over whatever grounded
+  provider is configured). The reasoning model is chosen from
+  `LLMProviderManager` by api_type, never hardcoded, and Perplexity's `sonar`
+  models are excluded because they cannot call tools. Runs on a
+  `ThreadPoolExecutor` capped at 4, following `app/scheduler.py`.
+- **Phase D, the frontend.** `frontend/src/pages/analytics/Investigations.tsx`
+  at `/analytics/investigations`, indented under Analytics. Polls only while
+  something is running. Limitations render as information, not as an error.
+  `**bold**` becomes React nodes; no `dangerouslySetInnerHTML`, because
+  summaries are model-written from collected AI responses.
+- **Phase E, auto-triggers.** `app/services/investigation/triggers.py`, hooked
+  into `data_pipeline.py` after the batch-analytics recompute through
+  `check_after_collection`, which cannot raise. Thresholds are env-overridable
+  (see `docs/ENV_VARS_REFERENCE.md`); dedupe is on
+  `(brand_id, comparison_mode, current_period_start)`; it never fires on an
+  empty window.
+
+The through-line of the whole feature is keeping "the tool failed" distinct from
+"the tool found nothing". They are the same shape in a JSON payload and opposite
+in meaning, and conflating them turns a dead web search into a confident finding
+that there was no external news. Every dialect adapter marks failures in the way
+that dialect supports, the prompt says what an error means, and there are tests
+for each.
+
+#### Test isolation fix
+
+`tests/conftest.py` now stubs `service.submit` for the whole suite. Without it a
+test that triggers an investigation spawns a worker that opens its own
+`SessionLocal` against the configured `DATABASE_URL`, which is how test runs came
+to be writing database files into the repo root.
+
+#### SAST: "could not run" is now separate from "found something"
+
+`./scripts/run_sast.sh` reports `COULD NOT RUN:` and `FINDINGS:` separately and
+says which happened in its summary. Both still fail the run. The old script
+reported semgrep's rule-download failure as "semgrep reported findings in app/",
+which is exactly backwards, and a gate that conflates the two teaches everyone
+to ignore it.
+
+Two working remedies for the download failure, both now in
+`docs/SECURITY_NOTES.md`. The certifi one from the previous handover note is
+confirmed correct, with one trap worth naming: the chain must be taken **off the
+wire** with `openssl s_client`, not pulled from the system keychain by name. The
+keychain's Zscaler root is rejected by OpenSSL 3 ("Basic Constraints of CA cert
+not marked critical"), which produces a different verification error that looks
+like the same problem and is not. The second remedy is new:
+`scripts/fetch_semgrep_rules.sh` downloads the packs with curl and
+`SEMGREP_RULES_DIR=.semgrep-rules ./scripts/run_sast.sh` scans against them,
+which needs no per-machine trust setup and is the only option that works for a
+lab with no access to semgrep.dev at all. Rule ids gain a path prefix when
+loaded from files, so any rule named in the script or in a `# nosemgrep:`
+comment carries both spellings.
+
+Result with local rules: bandit 0, semgrep 0 (one pre-existing raw-SQL finding
+in `app/migrations/run_migrations.py` suppressed inline with its reason: the
+table name comes from a hardcoded whitelist and a table name cannot be a bound
+parameter), pip-audit 0 unaccepted, npm audit 0 unaccepted.
 
 ### NEXT SESSION
 
-1. **Investigations Phases C, D, E.** Spec: `docs/INVESTIGATIONS_DESIGN.md`.
-   Decisions already made: both manual and auto triggers; thresholds on by
-   default; with no grounded provider key, degrade and record the limitation
-   rather than failing the run.
-2. **Re-run SAST** (`./scripts/run_sast.sh`). Note: semgrep currently reports a
-   FAILURE that is actually a *rule-download* failure, not a finding. Zscaler
-   intercepts semgrep.dev transparently (even with the proxy env unset) and
-   Python's certifi does not trust its CA, while curl does. Verified fix:
-   point `REQUESTS_CA_BUNDLE` at certifi's bundle concatenated with the Zscaler
-   root. The script should also distinguish "scan could not run" from "scan
-   found problems" — a security gate that conflates them is worse than none.
-3. **Merge plan for 2.0.** `release/2.0` was already merged to `main` via PR #23,
+1. **Merge plan for 2.0.** `release/2.0` was already merged to `main` via PR #23,
    and `release/2.0` is a direct ancestor of this branch, so this is a clean
    fast-forward with no force-push. Suggested: fast-forward `release/2.0` onto
    this work, PR to `main`, then tag `v2.0.0` (the only tag today is `v1.0.0`).
    Do **not** force-push over the existing 2.0 commits; they are public and may
    have been cloned.
+2. **Investigations follow-ups, both deliberately deferred:** per-brand
+   thresholds (today they are deployment-wide, and `threshold_for` is the single
+   place a per-brand setting would land), and batch-mode auto-triggers (only
+   month-over-month fires automatically; a single batch is too noisy to raise an
+   investigation over).
+3. **No grounded round-trip has been exercised.** Every investigation test stubs
+   the model. The first real run on a deployment with live keys is worth
+   watching, particularly the Google and OpenAI tool-use adapters, which were
+   verified against their SDK surfaces but not against the live APIs.
 
 ### Earlier: session 3 handover
 

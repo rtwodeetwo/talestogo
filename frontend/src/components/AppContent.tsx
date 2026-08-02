@@ -24,6 +24,7 @@ import ShareOfVoice from '../pages/analytics/ShareOfVoice';
 import BrandMentions from '../pages/analytics/BrandMentions';
 import DescriptorAnalysis from '../pages/analytics/DescriptorAnalysis';
 import CompetitorThreats from '../pages/analytics/CompetitorThreats';
+import Investigations from '../pages/analytics/Investigations';
 import HowTalesWorks from '../pages/HowTalesWorks';
 import Help from '../pages/Help';
 import Login from '../pages/auth/Login';
@@ -117,6 +118,17 @@ const AppRoutes: React.FC = () => {
             <ProtectedRoute>
               <Layout>
                 <CompetitorThreats />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/analytics/investigations"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Investigations />
               </Layout>
             </ProtectedRoute>
           }

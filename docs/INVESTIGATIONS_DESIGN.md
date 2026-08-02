@@ -1,19 +1,18 @@
-# Investigations: design and remaining work
+# Investigations: design and how it works
 
-**Status:** Phases A and B are built, tested and merged. Phases C, D and E are
-specified here and not yet started.
+**Status:** built. Phases A to E are complete and tested.
 
 An investigation explains **why** the metrics moved between two comparable
 windows. The dashboard says the mention rate fell twelve points; an
 investigation works out whether that is one platform re-ranking, a competitor's
 PR push, a single query flipping, or a collection that partly failed.
 
-This document is the working spec. It exists so the remaining phases can be
-picked up without re-deriving any of the decisions.
+This document is the working spec. It records the decisions so they do not have
+to be re-derived.
 
 ---
 
-## What is already built
+## What is built
 
 | Piece | File | Notes |
 |---|---|---|
@@ -21,12 +20,16 @@ picked up without re-deriving any of the decisions.
 | Schemas | `app/schemas.py` | `InvestigationCreate/Summary/Detail`, tool invocation |
 | Scope resolution | `app/services/investigation/scope.py` | batch / month / quarter, all as `MetricScope` |
 | Evidence pack | `app/services/investigation/evidence.py` | 8 deterministic tools |
+| Tool-use adapters | `app/services/investigation/agent_client.py` | Anthropic, OpenAI, Google dialects |
+| External search | `app/services/investigation/search.py` | one tool, scoped, degrades cleanly |
+| Agent loop | `app/services/investigation/service.py` | bounded worker pool, audit trail |
+| Auto-triggers | `app/services/investigation/triggers.py` | thresholds, dedupe, never fails a collection |
 | API | `app/routers/investigations.py` | trigger, list, detail, tool-invocations, evidence, delete |
-| Tests | `tests/test_investigation_evidence.py`, `tests/test_investigations_router.py` | 55 tests |
+| Frontend | `frontend/src/pages/analytics/Investigations.tsx` | `/analytics/investigations` |
+| Tests | `tests/test_investigation_*.py` | 108 tests, no live model calls |
 
-No LLM is called anywhere in the above. `GET /api/investigations/{id}/evidence`
-returns the complete evidence pack for a comparison with no model involved, and
-is useful on its own.
+`GET /api/investigations/{id}/evidence` returns the complete evidence pack for a
+comparison with no model involved, and is useful on its own.
 
 ### The load-bearing decision
 
@@ -44,7 +47,7 @@ because metric populations report their own exclusions.
 
 ---
 
-## Decisions already made
+## Decisions
 
 Confirmed by the product owner, 2026-08-01:
 
@@ -60,47 +63,59 @@ Confirmed by the product owner, 2026-08-01:
 
 ---
 
-## Phase C: the agent loop
+## The agent loop
 
-**New file:** `app/services/investigation/service.py`
-
-### Shape
+`app/services/investigation/service.py`
 
 1. Mark `running`, set `started_at` and `last_heartbeat_at`.
 2. Rebuild the comparison with `scope_from_investigation`.
-3. Build the tool list from `evidence.EVIDENCE_TOOLS` plus the search tool.
-4. Call the model with tools; loop while `stop_reason == "tool_use"`, capped at
-   **15 iterations**.
+3. Build the tool list from `evidence.EVIDENCE_TOOLS`, plus the search tool if,
+   and only if, a grounded provider is configured. A tool that cannot work is
+   not offered, so the model does not spend a turn discovering that.
+4. Call the model with tools; loop while the turn asks for tools, capped at
+   **15 iterations** (`MAX_ITERATIONS`).
 5. Persist one `InvestigationToolInvocation` per call: input JSON, output JSON
-   (truncate at ~10,000 chars), status, `duration_ms`, sequence.
-6. Touch `last_heartbeat_at` each iteration so the reaper can tell a live run
-   from an orphaned one.
-7. Parse the final text, store `title`, `summary`, `key_findings`,
-   `recommended_actions`, `limitations`, token totals.
+   (truncated at 10,000 characters), status, `duration_ms`, sequence.
+6. Touch `last_heartbeat_at` each iteration so the reaper in the router can tell
+   a live run from an orphaned one.
+7. Parse the final text into `title`, `summary`, `key_findings`,
+   `recommended_actions`; store `limitations` and token totals.
 
 ### Things that must not be got wrong
 
-- **A failed tool must be marked as an error in the tool result.** Without
-  `"is_error": true`, the model reads a failure payload as an ordinary answer,
-  and a dead search becomes "no news found".
-- **Roll back the session on a tool exception** before re-raising, or every
-  later tool in the run gets an unusable session. Do not swallow the exception
-  into a success-shaped payload; a broken tool and an empty result must be
-  distinguishable.
+These are the reasons the code looks the way it does. Each has a test.
+
+- **A failed tool must be marked as an error in the tool result.** Without it,
+  the model reads a failure payload as an ordinary answer, and a dead search
+  becomes "no news found". Anthropic has an `is_error` flag on `tool_result`;
+  Google has an `error` key in the function response; chat completions has
+  neither, so the adapter states the failure in words instead.
+- **Roll back the session on a tool exception** before recording the failure, or
+  every later tool in the run gets an unusable session. The exception is never
+  swallowed into a success-shaped payload; a broken tool and an empty result
+  must stay distinguishable.
 - **Do not send `temperature`.** Current Claude models (Opus 4.7/4.8, Sonnet 5)
-  reject it with a 400. See `_anthropic_rejects_sampling` in
-  `app/services/generic_llm_client.py`, which already encodes this.
+  reject it with a 400, as do GPT-5 and the o-series, which additionally want
+  `max_completion_tokens`. No adapter sends a sampling parameter at all.
 - **`max_tokens` must fit the whole final synthesis.** Title, summary, findings
-  and actions arrive in one response. Too low and the write-up is cut off
-  mid-findings and stored as though complete. 12288 is a known-good figure.
-  Detect truncation and record it as a limitation rather than pretending the
-  run succeeded.
+  and actions arrive in one response. 12288 is a known-good figure. A turn that
+  stops on `max_tokens` is recorded as a limitation rather than stored as a
+  completed investigation.
 
-### Model
+### Model selection
 
-Read `docs/METRIC_DEFINITIONS.md` conventions but pick the model from the
-existing provider configuration rather than hardcoding it. `LLMProviderManager`
-already resolves providers and keys; do not introduce a second mechanism.
+`select_agent_provider` picks from the configured providers by `api_type`,
+preferring Anthropic, then OpenAI, then Azure, then Google, then any
+OpenAI-compatible endpoint. Nothing is hardcoded: an admin who upgrades the
+model under Admin, LLM Providers upgrades investigations at the same time, and
+`LLMProviderManager` remains the only place that resolves providers and keys.
+
+Perplexity's `sonar` models are excluded by model name rather than by api_type.
+They speak an OpenAI-shaped API but do not do function calling, while an
+internal LiteLLM-style gateway is also `openai_compatible` and does.
+
+Three dialects are supported rather than one because a lab may realistically
+have only one key, and `GEMINI_API_KEY` is the only required one.
 
 ### The search tool
 
@@ -109,32 +124,32 @@ near-identical tools.
 
 - Providers come from `LLMProviderManager.get_web_search_providers()`, which
   returns rows with `supports_web_search AND is_enabled`.
-- Try providers in order, cheapest and most recency-reliable first. Gemini
-  grounding is a good default first choice; leave the Anthropic key with
-  headroom because the agent loop itself is spending it.
+- Tried in order, cheapest and most recency-reliable first. Google grounding
+  goes first; Anthropic is last so a search does not compete with the reasoning
+  budget the agent loop is already spending.
 - An empty string counts as a failure. Google grounding can return one without
   raising.
-- If every provider fails, or none is configured: **do not fail the run.**
-  Append to `limitations`:
-  `{"limitation": "External news search unavailable (no grounded provider configured)",
-    "impact": "External causes could not be checked. Conclusions rest on internal data only."}`
+- Failure is raised, not returned, so the loop flags it `is_error`. After every
+  provider has failed once the tool refuses to retry: it is failing for
+  infrastructure reasons and retries waste the budget.
+- If every provider fails, or none is configured, the run does **not** fail. It
+  appends to `limitations`, distinguishing "no provider configured" from
+  "configured and failed", both with the impact spelled out.
 
 ### Prompt rules that matter
 
-The system prompt must state, in some form:
+The system prompt states, and the code enforces where it can:
 
 - A search flagged as an error means the search **did not run**. That is not
-  evidence that there was no news. Say the external check could not be
-  completed; do not attribute the change to an absence of external events.
+  evidence that there was no news.
 - If a search runs and finds nothing relevant, say so rather than speculating.
-- Do not retry a failed search more than once; it is failing for infrastructure
-  reasons and retries waste the budget.
+- Do not retry a failed search more than once.
 - Cite specific numbers, query ids, platform names and response excerpts.
 - **Check `data_quality` on both sides before concluding anything about
   reputation.** Rows excluded as unanalyzed are collection or analysis failures.
 - Compare rates, not raw counts: collection volume can differ between windows.
 
-Required output shape, parsed by the service:
+Output shape, parsed by `parse_final_output`:
 
 ```
 TITLE: <one line>
@@ -149,90 +164,110 @@ SUMMARY:
 <2-4 paragraphs of markdown, with specific numbers>
 ```
 
-Tolerate `**bold**` variants of the headers when parsing.
+`**bold**` variants of the headers are tolerated, as are numbered lists and
+wrapped lines. Output that matches nothing is kept whole as the summary: a badly
+formatted investigation is worth more than an empty one.
 
 ### Concurrency
 
-Use a small bounded worker pool, not a bare thread per request. Unbounded thread
-spawning means N simultaneous triggers hold N database connections for minutes
-each. Reuse the pattern in `app/scheduler.py`, which already caps concurrent
-scheduled runs.
+A `ThreadPoolExecutor` capped at 4, following `app/scheduler.py`. An
+investigation holds a database connection for minutes, so a thread per request
+would mean N simultaneous triggers holding N connections.
 
 ---
 
-## Phase D: the frontend
+## The frontend
 
-**New file:** `frontend/src/pages/analytics/Investigations.tsx`
-**Route:** `/analytics/investigations`, added to `AppContent.tsx`
-**Nav:** indented under Analytics in `Layout.tsx`
+`frontend/src/pages/analytics/Investigations.tsx`, route
+`/analytics/investigations`, indented under Analytics in the nav.
 
-- List of investigation cards, newest first. Poll every 5s **only while
-  something is pending or running**, then stop.
-- Header button runs the default comparison (month) directly; a dropdown arrow
-  offers quarter and latest-collection. Mirror the dashboard's comparison
-  options so a question raised by a dashboard card can be investigated on the
-  same footing.
-- Card collapsed: title, status chip, trigger-type chip, a period chip reading
+- Cards newest first. Polls every 5s **only while something is pending or
+  running**, then stops.
+- Header button runs the month comparison; the dropdown arrow offers quarter and
+  latest collection, mirroring the dashboard so a question raised by a dashboard
+  card can be investigated on the same footing.
+- Collapsed: title, status chip, trigger-type chip, a period chip reading
   "February 2026 vs January 2026", created date, tool-call count.
-- Card expanded: summary, key findings (numbered), recommended actions
-  (bulleted), a **limitations** panel styled as information rather than error,
-  and a "Show agent trace" toggle revealing the tool-invocation table.
-- Surface the backend's `detail` message on a failed trigger. The backend
-  rejects an empty comparison window with a useful explanation; a bare "Request
-  failed" throws that away.
+- Expanded: summary, numbered key findings, bulleted recommended actions, a
+  limitations panel styled as **information rather than error**, and a "Show
+  agent trace" toggle revealing the tool-invocation table with failed calls in
+  red.
+- A failed trigger surfaces the backend's `detail` message. The backend rejects
+  an empty comparison window with a useful explanation, and a bare "Request
+  failed" would throw that away.
 
 **Security:** investigation summaries are model-written from query text and
-collected responses, both of which can carry attacker-supplied markup. Render
-`**bold**` as React nodes; never use `dangerouslySetInnerHTML`.
+collected responses, both of which can carry attacker-supplied markup.
+`**bold**` is rendered as React nodes; there is no `dangerouslySetInnerHTML`
+anywhere on the page.
 
 ---
 
-## Phase E: auto-triggers
+## Auto-triggers
 
-**New file:** `app/services/investigation/triggers.py`
-
-Hook into the collection pipeline after batch analytics are recomputed
-(`app/services/data_pipeline.py`), wrapped so a failure here can never fail a
-collection.
+`app/services/investigation/triggers.py`, called from
+`app/services/data_pipeline.py` after batch analytics are recomputed, through
+`check_after_collection`, which cannot raise.
 
 Default thresholds, in percentage points, all absolute:
 
-| Metric | Threshold |
-|---|---|
-| mention rate | 10.0 |
-| positive sentiment | 15.0 |
-| leadership visibility | 15.0 |
-| share of voice (any competitor) | 10.0 |
+| Metric | Threshold | Environment override |
+|---|---|---|
+| mention rate | 10.0 | `INVESTIGATION_THRESHOLD_MENTION_RATE` |
+| positive sentiment | 15.0 | `INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE` |
+| leadership visibility | 15.0 | `INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY` |
+| share of voice (brand or any competitor) | 10.0 | `INVESTIGATION_THRESHOLD_SHARE_OF_VOICE` |
+
+`INVESTIGATIONS_AUTO_TRIGGER=false` switches the whole thing off. Overrides are
+read per call, so retuning does not need a restart.
 
 Rules:
 
-- Compute deltas through `evidence.compare_scopes` so the trigger and the
-  investigation agree on what moved.
-- **Never fire when either window is empty.** A period with no collection would
-  read as a total collapse in every metric. `scope.py` already refuses this.
-- **Dedupe on `(brand_id, comparison_mode, current_period_start)`.** The index
-  `idx_investigation_brand_mode_period` exists for this. The first batch of a
-  new month closes out the previous one, so that is when a period trigger fires;
-  later batches re-check but must not produce a second investigation for a
-  period that already has one.
-- Store the deltas that fired it in `trigger_metrics`, and set
+- Deltas come from `evidence.compare_scopes`, so the trigger and the
+  investigation cannot quote different figures for the same movement.
+- Competitor share of voice is checked per organization as well as for the
+  brand. A competitor can surge without the brand's own share moving much, and
+  that is exactly the case worth explaining.
+- **Never fires when either window is empty.** A period with no collection would
+  read as a total collapse in every metric. `scope.py` refuses to build such a
+  comparison and the trigger treats that refusal as "nothing to say".
+- **Dedupes on `(brand_id, comparison_mode, current_period_start)`**, backed by
+  `idx_investigation_brand_mode_period`. The first batch of a new month closes
+  out the previous one, so that is when a period trigger fires; later batches
+  re-check but must not produce a second investigation for the same period. Any
+  status counts, including failed: re-running automatically would fail the same
+  way and fill the list with noise. The manual trigger stays available.
+- The deltas that fired it are stored in `trigger_metrics` and set
   `trigger_type='auto'`.
-- Make the thresholds configurable per brand or per deployment before shipping
-  to labs; hardcoded constants are fine to start but should not stay that way.
+
+---
+
+## Still to do
+
+- **Per-brand thresholds.** Today they are deployment-wide. The resolution
+  already goes through one function (`threshold_for`), so a per-brand setting
+  has a single place to land.
+- **Batch-mode auto-triggers.** Only month-over-month fires automatically. A
+  single batch is a noisy signal to raise an investigation over.
 
 ---
 
 ## Verification
 
 ```bash
-pytest tests/test_investigation_evidence.py tests/test_investigations_router.py -q
+pytest tests/test_investigation_evidence.py tests/test_investigations_router.py \
+       tests/test_investigation_agent.py tests/test_investigation_agent_client.py \
+       tests/test_investigation_triggers.py -q
 ```
 
-Phase C should add a test that the agent loop records a failed tool as
-`status='failed'` with `is_error` set, and that a missing search provider
-produces a `limitations` entry rather than a failed run. Neither needs a real
-model: stub the client.
+No test calls a live model. The evidence pack is deterministic, so everything
+built on top of it is tested against the golden fixture in
+`tests/fixtures/golden_dataset.py` with hand-derived expectations, the same way
+`metrics_core` is. The trigger tests set thresholds through the environment
+rather than relying on the fixture happening to move by more than ten points, so
+they stay about the trigger logic.
 
-The evidence pack is deterministic, so anything built on top of it can be tested
-against the golden fixture in `tests/fixtures/golden_dataset.py` with
-hand-derived expectations, the same way `metrics_core` is.
+`tests/conftest.py` stubs `service.submit` for the whole suite. Without that, a
+test that triggers an investigation would spawn a worker that opens its own
+`SessionLocal` against the configured `DATABASE_URL`, which is how test runs
+came to be writing database files into the repo root.
