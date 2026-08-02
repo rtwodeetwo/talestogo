@@ -467,6 +467,12 @@ class UserUpdate(BaseModel):
     organization: Optional[str] = None
     model_config = ConfigDict(extra='forbid')
 
+class PasswordChange(BaseModel):
+    """Payload for a logged-in user changing their own password."""
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    model_config = ConfigDict(extra='forbid')
+
 class User(UserBase):
     id: int
     is_admin: bool

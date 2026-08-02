@@ -151,6 +151,14 @@ export const authAPI = {
     return response.data;
   },
 
+  changePassword: async (data: {
+    current_password: string;
+    new_password: string;
+  }) => {
+    const response = await api.post('/auth/change-password', data);
+    return response.data;
+  },
+
   getStoredUser: () => {
     const userStr = localStorage.getItem(USER_KEY);
     return userStr ? JSON.parse(userStr) : null;

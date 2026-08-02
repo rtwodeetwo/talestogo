@@ -10,6 +10,7 @@ interface User {
   is_admin: boolean;
   is_active: boolean;
   is_invited: boolean;
+  oauth_provider?: string | null;
   created_at: string;
   updated_at: string;
   gemini_api_key?: string;
