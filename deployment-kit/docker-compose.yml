@@ -16,6 +16,14 @@ services:
   # Tales Application
   # ---------------------------------------------------------------------------
   app:
+    # Check what a running instance actually is:
+    #   curl http://localhost:8080/health
+    # which reports the version, commit and build date baked in at build time.
+    #
+    # TODO: pin this to a version tag (e.g. rtwodeetwo/tales:2.0.1) once the
+    # first release build has published one. Do not pin ahead of that: this file
+    # is served live from GitHub's main branch, so naming a tag that does not
+    # exist yet breaks `docker compose up` for anyone who pulls the kit.
     image: rtwodeetwo/tales:latest
     ports:
       - "${APP_PORT:-8080}:8000"

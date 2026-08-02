@@ -7,8 +7,8 @@ This document lists all environment variables used by Tales. Variables marked as
 For a basic deployment, you need at minimum:
 
 ```bash
-JWT_SECRET_KEY=<random-string>
-ENCRYPTION_KEY=<random-string>
+APP_SECRET=<random-string>
+ENCRYPTION_KEY=<fernet-key>
 DATABASE_URL=postgresql://user:pass@host:port/database
 
 # LLM API keys — set at least one (required for data collection).
@@ -26,7 +26,7 @@ DATABASE_URL=postgresql://user:pass@host:port/database
 |----------|----------|-------------|---------|
 | `APP_SECRET` | **Yes*** | PPPL standard name for JWT signing secret | `Abc123XyzSecureRandomString` |
 | `JWT_SECRET_KEY` | **Yes*** | Legacy name for JWT signing secret | `Abc123XyzSecureRandomString` |
-| `ENCRYPTION_KEY` | **Yes** | Key for encrypting sensitive data (API keys) at rest. Must be a secure random string. | `DefGhi456AnotherSecureString` |
+| `ENCRYPTION_KEY` | **Yes** | Key for encrypting sensitive data (API keys) at rest. Must be a valid **Fernet** key: 32 url-safe base64-encoded bytes, 44 characters with the trailing `=`. Generate with `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. A `secrets.token_urlsafe(32)` string is 43 characters and the app will refuse to start. | `zHc9...=` (44 chars) |
 
 *`APP_SECRET` is the PPPL standard name. `JWT_SECRET_KEY` works as a fallback for backwards compatibility. Only one is required.
 
@@ -346,9 +346,11 @@ These are optional and only used when building the frontend (during Docker build
 ## Example .env File
 
 ```bash
-# Security (REQUIRED - generate unique values)
-JWT_SECRET_KEY=your-secure-random-jwt-key-here
-ENCRYPTION_KEY=your-secure-random-encryption-key-here
+# Security (REQUIRED - generate unique values; note the two different commands)
+#   APP_SECRET:     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+#   ENCRYPTION_KEY: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+APP_SECRET=your-secure-random-app-secret-here
+ENCRYPTION_KEY=your-44-character-fernet-key-here
 
 # Database (REQUIRED)
 DATABASE_URL=postgresql://tales:password@db:5432/tales

@@ -29,44 +29,61 @@ You will receive acknowledgement within 72 hours and a resolution plan within 14
 
 ## Security Testing
 
-Tales undergoes static analysis and dependency auditing before each release. The results below reflect the state of the `main` branch as of **2026-06-08** (post-merge of PRs #1, #2, #3, #4).
+Tales undergoes static analysis and dependency auditing before each release. The results below reflect the **2.0 release, scanned 2026-07-31** on Python 3.13.13.
 
 ### Static Application Security Testing (SAST)
 
-| Tool | Scope | Findings | Notes |
-|------|-------|----------|-------|
-| [Bandit](https://bandit.readthedocs.io/) v1.9+ | Python backend (`app/`, runtime web application) | **0** medium/high severity | 3 B608 (SQL injection) false positives suppressed with `# nosec B608`; all use format-validated identifiers, not user input |
-| Bandit (same run) | Python ops scripts (`scripts/testing/`) | **0** medium/high severity | `scripts/admin/` and `scripts/migrations/` are excluded via `[tool.bandit]` in `pyproject.toml` — these are one-shot local-dev scripts not part of the deployed surface area and not user-reachable |
-| [npm audit](https://docs.npmjs.com/cli/commands/npm-audit) | Frontend JavaScript dependencies | **0** vulnerabilities | |
+| Scan | Tool | Result |
+|------|------|--------|
+| Python static analysis | [Bandit](https://bandit.readthedocs.io/) 1.9.4 | **0** findings |
+| Pattern static analysis, `app/` | [semgrep](https://semgrep.dev/) 1.172.0 | **0** findings |
+| Pattern static analysis, offline scripts | semgrep 1.172.0 | **0** findings |
+| Shell-injection guard | grep | no `shell=True`, no `os.system()` |
+| Committed credentials | pattern scan over tracked files | none found |
 
-**Bandit suppression rationale** — The three `# nosec B608` annotations appear in migration utility files (`run_migrations.py`, `migration_helper.py`). In each case, the SQL identifier (table name or sequence name) is validated against a strict allowlist or regex format check before being interpolated. No user-supplied input reaches these queries.
+Two numbers are worth stating plainly, because "0 findings" is only meaningful alongside what the tools reported before anything was configured:
+
+- **bandit** reports 67 findings with no configuration at all, and every one of them is severity LOW. There are **no MEDIUM or HIGH findings** in this codebase whether or not you apply the project's configuration.
+- **semgrep** reports 30 findings with no scoping, and **none of them are in `app/`**. All 30 are the `avoid-sqlalchemy-text` rule firing on offline database migration scripts, which have to issue raw DDL because the ORM cannot express `ALTER TABLE`.
+
+The suppressions that take those to zero are narrow and individually justified. `app/`, the code that actually handles web requests, is scanned with every rule and no exclusions at all. Full methodology and the reasoning behind every suppression are in [`docs/SECURITY_NOTES.md`](docs/SECURITY_NOTES.md).
 
 ### Dependency Vulnerability Scanning
 
-| Tool | Scope | Findings | Notes |
-|------|-------|----------|-------|
-| [pip-audit](https://pypi.org/project/pip-audit/) | Python packages | **0** application CVEs | 2 CVEs affect the `pip` package manager itself (CVE-2026-3219, CVE-2026-6357); the Dockerfile upgrades pip during build (`pip install --upgrade pip`) |
-| [npm audit](https://docs.npmjs.com/cli/commands/npm-audit) | npm packages | **0** | |
+| Tool | Scope | Findings |
+|------|-------|----------|
+| [pip-audit](https://pypi.org/project/pip-audit/) 2.10.0 | Python packages | **0** unaccepted (1 accepted, below) |
+| [npm audit](https://docs.npmjs.com/cli/commands/npm-audit) (npm 11.13.0) | npm packages | **0** unaccepted (1 accepted, below) |
+
+### Accepted findings
+
+Both are dependency advisories with no fixed release available. Both were checked for reachability rather than waved through, and both were re-verified on 2026-07-31 as still having no fix published.
+
+**ecdsa 0.19.2 ([PYSEC-2026-1325](https://osv.dev/vulnerability/PYSEC-2026-1325), Minerva timing attack) — not reachable.** `ecdsa` is pulled in indirectly by `python-jose`. The advisory affects ECDSA signing, key generation and ECDH; signature verification is unaffected. Tales signs and verifies its own sessions with HS256 (HMAC-SHA256) and validates Microsoft/Entra ID tokens with RS256 through `pyjwt` backed by `cryptography`. No code path in Tales performs an ECDSA operation. Upstream has published no fix and considers the affected API inherently timing-sensitive.
+
+**react-router ([GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2), RSC mode CSRF bypass) — not reachable.** The advisory applies to React Router's RSC mode, where a server action can run before a 400 response is returned. The Tales frontend is a browser-only single-page application: no server runtime, no RSC mode, no server actions. The vulnerable code path is not present in the shipped build. The advisory covers 7.12.0 through 8.2.0; npm's only remediations are a downgrade to 7.11.0, which loses functionality, or a major upgrade to 8.x. Tales holds at the latest 7.x patch release and will resolve this when it moves to React Router 8.
 
 ### Reproducing the audit
 
+The full suite is committed to the repository, so you can verify the code yourself rather than take this document's word for it:
+
 ```bash
-# Static analysis
-bandit -r app/ scripts/ -ll -c pyproject.toml
-
-# Python dependency CVEs
-pip-audit --strict -r requirements.txt
-
-# JavaScript dependency CVEs
-cd frontend && npm audit
+pip install bandit semgrep pip-audit
 ```
 
-All three commands exit zero with no findings on the current `main`.
+```bash
+./scripts/run_sast.sh
+```
+
+It exits non-zero if anything fails, so it can gate a pipeline.
+
+If your network runs a TLS-intercepting proxy, semgrep's rule download may fail certificate verification. The script already works around this by bypassing the proxy for that one call.
 
 ### Audit log
 
 | Date | Branch / commit | bandit | pip-audit | npm audit | Notes |
 |------|-----------------|--------|-----------|-----------|-------|
+| 2026-07-31 | `main`, Tales 2.0 release | 0 findings | 0 unaccepted (1 accepted) | 0 unaccepted (1 accepted) | Tales 2.0 release scan, run on Python 3.13.13. Adds semgrep 1.172.0 to the suite, plus a shell-injection guard and a committed-credential scan. Two dependency advisories accepted as unreachable after review (`ecdsa`, `react-router`); see "Accepted findings" above. **This is the state a new deployer pulls from `main`.** |
 | 2026-06-09 | `main` @ `ea4c2e2c` | 0 medium/high | 0 CVEs | 0 vulns | Post-merge re-audit after PR #7 (second round of Bing review fixes — enabled-check invariant, multi-block message accumulation). 88/88 pytest passing. **This is the state PNNL (and any new deployer) will pull from `main` today.** |
 | 2026-06-09 | `bing-review-fixes-2` (pre-merge) | 0 medium/high | 0 CVEs | 0 vulns | Second round of review fixes on PR #6: (a) analysis-provider invariant now requires is_enabled=True at create+update (previously a misconfigured provider would silently fall back to whichever other provider was first enabled, defeating the user's intent); (b) bing_grounded message extraction accumulates all non-empty text blocks joined by \n\n (previously returned the first block, truncating multi-block responses). 88/88 pytest passing. |
 | 2026-06-09 | `main` @ `a6f04712` | 0 medium/high | 0 CVEs | 0 vulns | Post-merge re-audit after PR #6 (review fixes for the Bing additions). 84/84 pytest passing. This is the state PNNL (and any new deployer) will pull from `main` today. |

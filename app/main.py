@@ -347,8 +347,18 @@ app.include_router(migration_helper.router)
 # --- Health Check ---
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Health check endpoint for monitoring and container orchestration."""
-    return {"status": "healthy"}
+    """Health check endpoint for monitoring and container orchestration.
+
+    Also reports which build is running. The values are baked in by the
+    Dockerfile at build time, so a deployment can be matched back to a commit
+    without guessing from the image tag. They read "unknown" outside Docker.
+    """
+    return {
+        "status": "healthy",
+        "version": os.getenv("APP_VERSION", "unknown"),
+        "revision": os.getenv("GIT_SHA", "unknown"),
+        "built": os.getenv("BUILD_DATE", "unknown"),
+    }
 
 # --- Static Files & Frontend ---
 from fastapi.staticfiles import StaticFiles
