@@ -37,6 +37,7 @@ import {
 import { llmProvidersAPI } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { usePlatformConfig } from '../../contexts/PlatformContext';
+import { describeApiError } from '../../utils/apiError';
 
 interface LLMProvider {
   id: number;
@@ -128,7 +129,9 @@ const LLMConfiguration: React.FC = () => {
       setProviders(data);
     } catch (err: any) {
       console.error('Failed to load LLM providers:', err);
-      setError('Failed to load LLM providers');
+      // Not a bare string: a failed READ here renders as "No LLMs Configured",
+      // which looks like an empty list rather than a broken one.
+      setError(describeApiError(err, 'Failed to load LLM providers'));
     } finally {
       setLoading(false);
     }
@@ -283,7 +286,7 @@ const LLMConfiguration: React.FC = () => {
       refreshPlatforms(); // Refresh platform colors in context
     } catch (err: any) {
       console.error('Failed to save provider:', err);
-      setError(err.response?.data?.detail || 'Failed to save provider');
+      setError(describeApiError(err, 'Failed to save provider'));
     }
   };
 
@@ -299,7 +302,7 @@ const LLMConfiguration: React.FC = () => {
       refreshPlatforms();
     } catch (err: any) {
       console.error('Failed to delete provider:', err);
-      setError(err.response?.data?.detail || 'Failed to delete provider');
+      setError(describeApiError(err, 'Failed to delete provider'));
     }
   };
 
@@ -316,7 +319,7 @@ const LLMConfiguration: React.FC = () => {
     } catch (err: any) {
       setTestResults(prev => ({
         ...prev,
-        [provider.id]: { success: false, message: err.response?.data?.detail || 'Test failed' },
+        [provider.id]: { success: false, message: describeApiError(err, 'Test failed') },
       }));
     } finally {
       setTestingId(null);

@@ -10,3 +10,4 @@
 
 export * from './dateUtils';
 export * from './organizationNormalizer';
+export * from './apiError';
