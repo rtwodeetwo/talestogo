@@ -1,3 +1,16 @@
+<!--
+This file is the source for the Docker Hub overview page at
+https://hub.docker.com/r/rtwodeetwo/tales
+
+It is NOT synced automatically. Docker Hub requires a repo:admin token to edit
+a repository description, and the publish workflow deliberately holds only a
+repo:write token. When this file changes, paste it into the Docker Hub
+repository settings by hand.
+
+Short description (the one-line summary field):
+  AI reputation monitoring: track how AI assistants represent your organization
+-->
+
 # Tales
 
 Tales tracks how your organization is represented by AI assistants. It asks the
