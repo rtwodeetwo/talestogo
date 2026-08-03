@@ -112,8 +112,13 @@ jobs:
       # credential to admin so that prose can sync itself is not a trade worth
       # making in a repository that labs audit before deploying.
       #
-      # docs/dockerhub-overview.md is the source for that page. Paste it into
-      # Docker Hub by hand when it changes, which is rarely.
+      # docs/dockerhub-overview.md is the source for that page. Paste the whole
+      # file into the repository's overview field by hand when it changes, which
+      # is rarely. The file is kept free of editor notes so it can be copied
+      # wholesale with nothing to strip out.
+      #
+      # The separate one-line "short description" field should read:
+      #   AI reputation monitoring: track how AI assistants represent your organization
 
       - name: Report what was published
         run: |
