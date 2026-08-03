@@ -106,6 +106,34 @@ jobs:
           # which is correct for any host. Baking in a value here would pin
           # every deployment of this image to one URL.
 
+      - name: Sync the Docker Hub description
+        # Kept as plain API calls rather than a third-party action: this repo is
+        # audited by the labs that deploy it, and the overview page is not worth
+        # adding a supply-chain dependency for. Non-fatal, because failing to
+        # update a description must not report a successfully published image as
+        # a failed build.
+        continue-on-error: true
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tok=$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+                  -H 'Content-Type: application/json' \
+                  -d "$(jq -n --arg u rtwodeetwo --arg s "$DOCKERHUB_TOKEN" \
+                        '{identifier:$u, secret:$s}')" \
+                | jq -r '.access_token // empty')
+          if [ -z "$tok" ]; then echo "::warning::Docker Hub auth failed; description not updated"; exit 1; fi
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+                  -X PATCH "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/" \
+                  -H "Authorization: Bearer $tok" \
+                  -H 'Content-Type: application/json' \
+                  -d "$(jq -n --arg d 'AI reputation monitoring: track how AI assistants represent your organization' \
+                             --rawfile f docs/dockerhub-overview.md \
+                        '{description:$d, full_description:$f}')")
+          echo "PATCH returned $code"
+          [ "$code" = "200" ] || { echo "::warning::Description update returned $code"; cat /tmp/resp.json; exit 1; }
+          echo "Docker Hub description updated"
+
       - name: Report what was published
         run: |
           echo "### Published" >> "$GITHUB_STEP_SUMMARY"
