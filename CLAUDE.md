@@ -73,6 +73,118 @@ repo, never read from or written to from this working tree. Its production
 *database* may legitimately be read for a data migration (that is a database, not
 the codebase), but the repo itself is off limits.
 
+## Session Log: 2026-08-02 — Deployment kit accuracy, and the image nobody was rebuilding
+
+### Context
+
+Started as "grab the latest code" and became an audit of whether the deployment
+kit told the truth. It did not, in two ways that mattered.
+
+### The image was five months stale, and nothing was rebuilding it
+
+`rtwodeetwo/tales:latest` on Docker Hub had not been pushed since **2026-02-26**.
+`main` was 151 commits ahead. Nothing in the repository built or pushed it: the
+only workflow was `dast.yml`, and the GitLab pipeline pushes to the *GitLab*
+registry, not Docker Hub. So the image was a manual push that happened once.
+
+That image predated the strip-to-Tales-only cleanup, so it still shipped the 8
+non-Tales products, the 18 npm advisories, and the `setup_initial_admin.py`
+crash. **Step 3 of the kit's own quick start could not have worked on it.**
+
+Now fixed: `.github/workflows/publish-image.yml` publishes on merge to `main`
+and on `v*.*.*` tags. `latest` moves only on a version tag, so pinning it gets a
+release rather than the tip of `main`. Released **v2.0.1** (commit `5fc7c064`).
+
+### Image provenance
+
+The image could not identify itself: no labels, and `/health` returned only
+`{"status": "healthy"}`. Now the Dockerfile stamps `APP_VERSION`, `GIT_SHA` and
+`BUILD_DATE` into OCI labels and env, and `/health` reports them. To ask a
+registry which commit an image came from, without pulling it:
+
+```bash
+docker buildx imagetools inspect rtwodeetwo/tales:latest
+```
+
+### amd64 only — a decision, with evidence
+
+The February image was multi-arch. v2.0.1 is amd64 only.
+
+The only arm64 activity ever recorded against the old image was a crawler
+enumerating the manifest index: the arm64 entry and both attestation manifests
+were fetched **within 2.7 milliseconds of each other**, which no real pull of a
+198 MB image looks like. Rachel confirmed no lab had deployed at all.
+
+**To restore arm64, do NOT add `linux/arm64` to the existing build.** That builds
+it under QEMU, where `npm ci` for the frontend ran **46 minutes without
+finishing** before we cancelled it. Use a native `ubuntu-24.04-arm` runner plus a
+manifest merge. Those runners were **verified working and free on this repo**
+(probe returned `aarch64`, 4 CPUs, Ubuntu 24.04.4).
+
+The constraint is stated in both IT guides ("Supported Platform"), the kit
+README prerequisites, and the Docker Hub overview, so an ARM deployer is told
+before they hit an opaque manifest error.
+
+### Real bug found: `setup.sh` could never have worked
+
+`deployment-kit/setup.sh` generated `ENCRYPTION_KEY` with
+`secrets.token_urlsafe(32)`, which returns 43 characters. `app/auth.py:84` builds
+`Fernet(ENCRYPTION_KEY.encode())` at import, and Fernet requires exactly 44 with
+the trailing `=`. **Every deployment set up with that script failed at startup**
+with `ValueError: Fernet key must be 32 url-safe base64-encoded bytes`. The
+openssl fallback was broken the same way by `tr -d '='`.
+
+`APP_SECRET` and `ENCRYPTION_KEY` now use different generators everywhere, and
+the distinction is documented in both IT guides, `ENV_VARS_REFERENCE.md`, the kit
+README, and both `.env.template` files.
+
+### Docs brought in line with the code
+
+- **README.md** was 6 lines still titled "tales_project". Rewritten as a real
+  front door.
+- **Root `.env.template` did not exist**, so the documented `cp .env.template .env`
+  failed on a fresh clone. Added. Note `.gitignore`'s `.env.*` rule would have
+  silently swallowed it; there is now a `!.env.template` negation.
+- **Investigations were documented nowhere user-facing** despite shipping in 2.0.
+  Now in both user guides and both IT guides, leading with the fact that
+  auto-triggers spend LLM tokens without anyone asking.
+- **Root `SECURITY.md` was behind the kit's copy.** Carried the 2026-07-31 Tales
+  2.0 scan results (semgrep added, two accepted advisories) into it.
+- **Deployment kit IT guide** brought to parity with the canonical one.
+
+### Docker Hub overview page
+
+`docs/dockerhub-overview.md` is the source. **It is pasted by hand.** Editing a
+Docker Hub description requires a `repo:admin` token; the publish workflow holds
+only `repo:write`, and widening it so prose can sync itself is not a trade worth
+making in a repo the labs audit. An automated sync was tried and removed.
+
+### Gotchas worth not rediscovering
+
+- **`continue-on-error` rewrites a step's `conclusion` to `success`** and keeps
+  the truth only in `outcome`. A 403 was reported green. Twice tonight a green
+  signal masked a failure (the other: piping `gh run watch` into `tail` captures
+  `tail`'s exit code). **Verify the artifact, not the status reporting it.**
+- **Docker Hub's `hub.docker.com/v2` API lags badly.** It showed 1 tag while the
+  registry had 5. Query `registry-1.docker.io` for the truth.
+- **`Usage → Pulls` on a personal account measures your outbound pulls**, not
+  pulls of your repositories by others. It cannot answer "did anyone pull my
+  image", and no Docker Hub surface exposes puller identity on a free plan.
+- Local `main` had no upstream tracking (a legacy of `.git` being grafted rather
+  than cloned). Fixed with `git branch --set-upstream-to=origin/main main`.
+
+### PNNL status
+
+**Ross Lanes is an active contributor, not a prospective adopter.** 42 commits on
+`main`, most recently 2026-07-20, largely the MSAL PKCE refactor, redirect-mode
+auth, and auto-login for Entra ID, plus the CVE remediation PR. Any older note
+about offering him collaborator access is long overtaken.
+
+A short note was **sent** to Ross this session: the kit link, that the image is
+amd64, and an offer to publish arm64 if needed.
+
+---
+
 ## Session Log: 2026-05-08 — Strip-to-Tales-Only Cleanup
 
 ### Context
@@ -392,7 +504,8 @@ Web search grounding + latest models merged to `main` (PR #15). PNNL/labs update
 - **Send the PNNL/labs update email** about the web-search-grounding change (drafted this session; needs recipient addresses + the second lab's name; send from `rkremen@pppl.gov`, not the connected personal Gmail). The repo is **public**, so no collaborator setup is needed — the GitHub URL just works.
 - **Add LICENSE to `tales_project`** if Rachel wants the same MIT license there (separate task, separate repo)
 - **Remove "Generate Report All Data" button from `tales_project`** if Rachel wants it gone from production (separate task, separate repo)
-- **Consider GitHub repo description / contributing guidelines** before PNNL clones
+- **Contributing guidelines** still absent. The GitHub repo *description* is set, and the README was rewritten 2026-08-02, so that half is done.
+- **Docker Hub short description** (the one-line field, separate from the overview) was still reading empty via the API at the end of the 2026-08-02 session, shortly after Rachel set it. Most likely API lag rather than a failed save, but worth confirming: `curl -s https://hub.docker.com/v2/repositories/rtwodeetwo/tales/ | jq -r .description`
 
 ### Known Issues — pre-existing or deferred
 
