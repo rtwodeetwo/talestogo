@@ -105,6 +105,12 @@ OIDC_DISCOVERY_URL=https://login.microsoftonline.com/{tenant-id}/v2.0/.well-know
 - **Docker** (version 20.10 or later)
 - **Docker Compose** (version 2.0 or later)
 
+### Supported Platform
+
+The published image is built for **`linux/amd64`** only. On an ARM host (AWS Graviton, Ampere, Apple Silicon) `docker compose up` will fail with a manifest error rather than starting.
+
+ARM deployments are still possible: build from source with `docker compose up -d --build`, which is supported and produces an image for whatever architecture you build on. If you need a published ARM image, open an issue and one can be added.
+
 ### Required API Keys
 
 You will need API keys from at least one LLM provider. Tales is provider-agnostic — any one of the supported providers can run the full pipeline. **API keys are set exclusively as environment variables** — in a `.env` file (Docker Compose) or your hosting platform's environment settings (e.g., the Railway or Render dashboard). The **Admin → LLM Providers** page does **not** store API keys; it only configures non-key settings (name, model, color, Azure resource URL, deployment name, web-search flag) after first login.

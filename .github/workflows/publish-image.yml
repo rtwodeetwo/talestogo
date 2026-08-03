@@ -78,11 +78,19 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # amd64 only, temporarily. arm64 is still wanted, but building it
-          # here means QEMU emulation, and `npm ci` for the frontend ran 46
-          # minutes under emulation without finishing before we cancelled it.
-          # It comes back via a native ubuntu-24.04-arm runner plus a manifest
-          # merge, which needs no emulation. Do not re-add it to this line.
+          # amd64 only, by decision rather than by accident.
+          #
+          # The February image was multi-arch, but the only arm64 activity ever
+          # recorded against it was a crawler enumerating manifests (three
+          # non-amd64 manifests fetched within 2.7ms of each other), not a
+          # deployment. No known consumer runs ARM.
+          #
+          # If an ARM deployer does appear, they get an explicit manifest error
+          # and can build from source, which is supported and documented. To
+          # restore the platform, do NOT simply add linux/arm64 here: that
+          # builds it under QEMU, where `npm ci` alone ran 46 minutes without
+          # finishing. Build it on a native ubuntu-24.04-arm runner (verified
+          # available and free to this repo) and merge the manifests.
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

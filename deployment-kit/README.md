@@ -22,6 +22,7 @@ This kit contains everything you need to deploy Tales at your organization.
 
 - Docker (version 20.10+)
 - Docker Compose (version 2.0+)
+- An **x86-64 (amd64)** host. The published image is amd64 only; on ARM, build from source instead (see `IT_DEPLOYMENT_GUIDE.md`)
 - An API key for at least one LLM provider (OpenAI, Anthropic, Google Gemini, Azure OpenAI, or Perplexity) — Tales is provider-agnostic
 - OIDC credentials from IT (if using Entra ID authentication)
 
