@@ -504,8 +504,7 @@ Web search grounding + latest models merged to `main` (PR #15). PNNL/labs update
 - **Send the PNNL/labs update email** about the web-search-grounding change (drafted this session; needs recipient addresses + the second lab's name; send from `rkremen@pppl.gov`, not the connected personal Gmail). The repo is **public**, so no collaborator setup is needed — the GitHub URL just works.
 - **Add LICENSE to `tales_project`** if Rachel wants the same MIT license there (separate task, separate repo)
 - **Remove "Generate Report All Data" button from `tales_project`** if Rachel wants it gone from production (separate task, separate repo)
-- **Contributing guidelines** still absent. The GitHub repo *description* is set, and the README was rewritten 2026-08-02, so that half is done.
-- **Docker Hub short description** (the one-line field, separate from the overview) was still reading empty via the API at the end of the 2026-08-02 session, shortly after Rachel set it. Most likely API lag rather than a failed save, but worth confirming: `curl -s https://hub.docker.com/v2/repositories/rtwodeetwo/tales/ | jq -r .description`
+- **Contributing guidelines** still absent. The GitHub repo *description* is set, and the README was rewritten 2026-08-02, so that half is done. This is the last thing PNNL explicitly asked for in May 2026 that has not been delivered.
 
 ### Known Issues — pre-existing or deferred
 
