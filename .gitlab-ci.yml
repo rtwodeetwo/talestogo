@@ -79,10 +79,16 @@ deploy_to_portainer:
     # --fail-with-body turns an HTTP error into a non-zero exit while still
     # printing the response, which is what tells you why it was rejected.
     - curl --fail-with-body --silent --show-error -X POST "$PORTAINER_WEBHOOK_URL"
-    - echo "Portainer accepted the webhook for $CI_COMMIT_SHORT_SHA."
     # The swarm restart is rolling, so the old container keeps answering 200
     # while the new one comes up. Acceptance is not yet arrival.
-    - echo "Not live yet: GET /health reports revision=$CI_COMMIT_SHA once it is."
+    #
+    # Keep these in a block scalar. An unquoted `echo "a: b"` is a YAML mapping,
+    # not a string, and GitLab rejects the whole config with "script config
+    # should be a string or a nested array of strings", which fails the pipeline
+    # before any job is created.
+    - |
+      echo "Portainer accepted the webhook for $CI_COMMIT_SHORT_SHA."
+      echo "Not live yet: GET /health reports revision=$CI_COMMIT_SHA once it is."
   rules:
     # Only deploy from main branch
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
