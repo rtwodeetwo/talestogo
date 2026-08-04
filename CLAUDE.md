@@ -66,11 +66,18 @@ description, and the GitHub image-publishing workflow, none of which affects a
 PPPL deployment. GitLab is 0 ahead, so the eventual sync is a **fast-forward** and
 needs none of the force-push dance below.
 
-**Before syncing GitLab, wire up the build args.** `.gitlab-ci.yml` passes only
-`VITE_API_URL` and `VITE_MICROSOFT_CLIENT_ID` to Kaniko, not `APP_VERSION`,
-`GIT_SHA` or `BUILD_DATE`. Push as-is and `/health` on tales.pppl.gov reports
-`"unknown"` for all three, so the one change PPPL would actually benefit from
-arrives dead, and you are back to counting routes to verify a deploy.
+**Provenance is wired into GitLab CI.** `.gitlab-ci.yml` passes `APP_VERSION`,
+`GIT_SHA` and `BUILD_DATE` to Kaniko, so `GET /health` on tales.pppl.gov reports
+the commit the running container was built from. That is now the check to use
+after a deploy, in place of counting routes in `/openapi.json`. It only works for
+images built after this was added; anything older answers `"unknown"`.
+
+**`deploy_to_portainer` can fail now.** It was `curl -s ... || echo "Warning"`,
+which reported success whether the webhook fired, 404'd, or the variable was
+empty. It now exits non-zero on an unset `PORTAINER_WEBHOOK_URL` and on any HTTP
+error. A green deploy job means the webhook was accepted, which is still not the
+same as the new container serving: the swarm restart is rolling, so confirm with
+`/health`.
 
 - GitLab `main` was `aa54b1b8` (26 February 2026, pre-strip, still carrying the 8
   removed products) until it was force-pushed to 2.0 on 2026-08-02.
