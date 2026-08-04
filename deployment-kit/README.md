@@ -22,6 +22,7 @@ This kit contains everything you need to deploy Tales at your organization.
 
 - Docker (version 20.10+)
 - Docker Compose (version 2.0+)
+- An **x86-64 (amd64)** host. The published image is amd64 only; on ARM, build from source instead (see `IT_DEPLOYMENT_GUIDE.md`)
 - An API key for at least one LLM provider (OpenAI, Anthropic, Google Gemini, Azure OpenAI, or Perplexity) — Tales is provider-agnostic
 - OIDC credentials from IT (if using Entra ID authentication)
 
@@ -36,9 +37,14 @@ cp .env.template .env
 Edit `.env` and add at minimum:
 
 ```bash
-# REQUIRED: Security keys (generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+# REQUIRED: Security keys. These take DIFFERENT generator commands.
+#   APP_SECRET:     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+#   ENCRYPTION_KEY: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# ENCRYPTION_KEY must be a valid Fernet key (44 chars, trailing '=' intact).
+# A token_urlsafe string is 43 chars and the app will refuse to start.
+# Or just run ./setup.sh, which generates both correctly.
 APP_SECRET=your-random-secret-key
-ENCRYPTION_KEY=your-random-encryption-key
+ENCRYPTION_KEY=your-fernet-key
 
 # REQUIRED: At least one LLM API key — pick whichever you have.
 # Configure the provider's details (model, endpoint, etc.) in the Admin UI
@@ -123,6 +129,8 @@ After logging in:
 4. **Run Collection** - Go to Data > Collect & Analyze to gather AI responses
 
 **Automated Collection:** Once configured, Tales automatically collects data on the 1st, 7th, 14th, and 21st of each month. Reports are generated monthly, quarterly, and annually.
+
+**Automated Investigations:** When a metric moves more than its threshold between two periods, Tales opens an investigation explaining why, using your configured LLM. This is on by default and is the one feature that spends tokens without a person asking. Set `INVESTIGATIONS_AUTO_TRIGGER=false` to run investigations only on request. See `IT_DEPLOYMENT_GUIDE.md` for thresholds and cost profile.
 
 ---
 

@@ -80,6 +80,30 @@ COPY requirements.txt .
 # Copy built frontend from builder stage
 COPY --from=frontend-builder /frontend/dist ./frontend/dist
 
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+# Which commit built this image. Without these, a published image cannot be
+# matched back to a commit and drift is invisible until someone diffs behavior.
+# Read them without pulling the image:
+#   docker buildx imagetools inspect <image> --format '{{json .Manifest}}'
+# A running deployment reports the same values at GET /health.
+ARG APP_VERSION=unknown
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+ENV APP_VERSION=${APP_VERSION}
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_DATE=${BUILD_DATE}
+
+LABEL org.opencontainers.image.title="Tales" \
+      org.opencontainers.image.description="AI reputation monitoring platform" \
+      org.opencontainers.image.source="https://github.com/rtwodeetwo/talestogo" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
 # Expose port
 EXPOSE 8000
 

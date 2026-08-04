@@ -9,10 +9,11 @@ This guide is for IT teams deploying Tales at their organization. Tales is an AI
 3. [Quick Start](#quick-start)
 4. [Configuration](#configuration)
 5. [Initial Admin Setup](#initial-admin-setup)
-6. [Verification](#verification)
-7. [Optional: OAuth Configuration](#optional-oauth-configuration)
-8. [Maintenance](#maintenance)
-9. [Troubleshooting](#troubleshooting)
+6. [Investigations](#investigations)
+7. [Verification](#verification)
+8. [Optional: OAuth Configuration](#optional-oauth-configuration)
+9. [Maintenance](#maintenance)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -104,6 +105,12 @@ OIDC_DISCOVERY_URL=https://login.microsoftonline.com/{tenant-id}/v2.0/.well-know
 - **Docker** (version 20.10 or later)
 - **Docker Compose** (version 2.0 or later)
 
+### Supported Platform
+
+The published image is built for **`linux/amd64`** only. On an ARM host (AWS Graviton, Ampere, Apple Silicon) `docker compose up` will fail with a manifest error rather than starting.
+
+ARM deployments are still possible: build from source with `docker compose up -d --build`, which is supported and produces an image for whatever architecture you build on. If you need a published ARM image, open an issue and one can be added.
+
 ### Required API Keys
 
 You will need API keys from at least one LLM provider. Tales is provider-agnostic — any one of the supported providers can run the full pipeline. **API keys are set exclusively as environment variables** — in a `.env` file (Docker Compose) or your hosting platform's environment settings (e.g., the Railway or Render dashboard). The **Admin → LLM Providers** page does **not** store API keys; it only configures non-key settings (name, model, color, Azure resource URL, deployment name, web-search flag) after first login.
@@ -172,8 +179,8 @@ nano .env  # or use your preferred editor
 
 ```bash
 # Security (generate unique values for your deployment)
-JWT_SECRET_KEY=<generate-random-string>
-ENCRYPTION_KEY=<generate-random-string>
+APP_SECRET=<generate-random-string>
+ENCRYPTION_KEY=<generate-a-fernet-key>
 
 # LLM API Keys — set at least one. Configure provider details in the Admin UI
 # after first login (Admin → LLM Providers).
@@ -186,10 +193,19 @@ AZURE_OPENAI_API_KEY=<optional>
 
 **Generate secure random keys:**
 
+`APP_SECRET` can be any random string:
+
 ```bash
-# Run this twice to generate JWT_SECRET_KEY and ENCRYPTION_KEY
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+`ENCRYPTION_KEY` must be a valid Fernet key, so it needs a different command:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+A Fernet key is exactly 32 url-safe base64-encoded bytes, which is 44 characters with the trailing `=` intact. `secrets.token_urlsafe(32)` returns 43 characters and will be rejected, and the application will fail to start. Do not use it for this variable.
 
 ### 3. Start the Application
 
@@ -510,6 +526,76 @@ Tales is provider-agnostic — pick whichever provider(s) fit your environment. 
 | **Azure AI Foundry Agents** | Yes (single-vendor Azure story) | Requires `pip install talestogo[azure-foundry]`. Uses Foundry Prompt Agents + Grounding with Bing Search. Auth via Azure Entra ID. |
 
 If no web-search-capable provider is configured (e.g., an Azure-only or OpenAI-only deployment), the "State of the LLMs" section will be omitted from generated reports. **All other report sections will work normally.**
+
+---
+
+## Investigations
+
+An investigation explains *why* metrics moved between two comparable periods,
+rather than only reporting that they did. Users run them from Analytics >
+Investigations, and Tales also opens them automatically when a metric crosses a
+threshold.
+
+**This is the one feature that spends LLM tokens without a person asking.** Read
+this section before deploying, and decide whether you want the automatic
+triggers on.
+
+### Cost and resource profile
+
+- An investigation is an agent loop: it calls your configured LLM repeatedly,
+  capped at **15 iterations** per run.
+- Each run holds a database connection for the duration, which is typically a
+  few minutes. Concurrency is capped at **4** simultaneous investigations.
+- Automatic triggers are evaluated after each collection batch is analyzed.
+  Results are deduplicated on brand plus comparison period, so a given period
+  produces at most one automatic investigation.
+
+### Which provider runs it
+
+Investigations use whichever LLM providers you have already configured under
+**Admin > LLM Providers**. Nothing is hardcoded. The selection order is
+Anthropic, then OpenAI, then Azure, then Google, then any other
+OpenAI-compatible endpoint.
+
+Perplexity's `sonar` models are skipped because they do not support function
+calling, which the agent loop requires. If Perplexity is your only provider,
+investigations will not run.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INVESTIGATIONS_AUTO_TRIGGER` | `true` | Set to `false` to disable automatic investigations. Users can still run them manually from the UI. |
+| `INVESTIGATION_THRESHOLD_MENTION_RATE` | `10.0` | Percentage points of movement that opens an investigation |
+| `INVESTIGATION_THRESHOLD_POSITIVE_SENTIMENT_RATE` | `15.0` | As above, for positive sentiment |
+| `INVESTIGATION_THRESHOLD_LEADERSHIP_VISIBILITY` | `15.0` | As above, for leadership visibility |
+| `INVESTIGATION_THRESHOLD_SHARE_OF_VOICE` | `10.0` | As above, for the brand's share of voice and for any single competitor's |
+
+Thresholds are absolute percentage points and are read on each evaluation, so
+retuning them does not require a restart. They currently apply deployment-wide
+rather than per brand.
+
+**When to turn the automatic triggers off.** Around a data import or a change in
+collection method, a large movement is expected and already understood. Setting
+`INVESTIGATIONS_AUTO_TRIGGER=false` for that window avoids spending tokens
+explaining something you did on purpose.
+
+### Behavior without a web-search provider
+
+Investigations degrade rather than fail. With no web-search-capable provider
+configured (Gemini, Perplexity, Bing Search v7, or Azure AI Foundry Agents), a
+run still completes using your collected data, and records what it could not
+check under "Limitations" on the investigation card. This is surfaced to users
+as information rather than as an error.
+
+### What it will not do
+
+Automatic investigations never fire when either comparison window is empty. A
+period with no collection would otherwise read as a total collapse across every
+metric.
+
+For the full design, including the evidence tools and the agent loop, see
+[INVESTIGATIONS_DESIGN.md](INVESTIGATIONS_DESIGN.md).
 
 ---
 
