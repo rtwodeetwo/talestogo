@@ -54,10 +54,23 @@ nothing restarts.
 So the two are not interchangeable even when the code is identical, and "push
 this" is ambiguous until she says where.
 
-### State of both remotes (as of 2026-08-02, after the 2.0 release)
+### State of both remotes (as of 2026-08-04)
 
-**Both are at `7aec4940`.** GitHub `main` is tagged `v2.0.0`; GitLab `main` is the
-same commit and is what `tales.pppl.gov` is running. No drift.
+**They have drifted, deliberately.** GitHub `main` carries 2.0.1 and is tagged
+`v2.0.0` and `v2.0.1`. GitLab `main` is still at `7aec4940` (2.0.0), 11 commits
+behind, and that is what `tales.pppl.gov` is running.
+
+The drift is fine to leave for now. Of the 11 commits, the only functional change
+is the `/health` version stamp; the rest is documentation, the Docker Hub
+description, and the GitHub image-publishing workflow, none of which affects a
+PPPL deployment. GitLab is 0 ahead, so the eventual sync is a **fast-forward** and
+needs none of the force-push dance below.
+
+**Before syncing GitLab, wire up the build args.** `.gitlab-ci.yml` passes only
+`VITE_API_URL` and `VITE_MICROSOFT_CLIENT_ID` to Kaniko, not `APP_VERSION`,
+`GIT_SHA` or `BUILD_DATE`. Push as-is and `/health` on tales.pppl.gov reports
+`"unknown"` for all three, so the one change PPPL would actually benefit from
+arrives dead, and you are back to counting routes to verify a deploy.
 
 - GitLab `main` was `aa54b1b8` (26 February 2026, pre-strip, still carrying the 8
   removed products) until it was force-pushed to 2.0 on 2026-08-02.
