@@ -54,17 +54,45 @@ nothing restarts.
 So the two are not interchangeable even when the code is identical, and "push
 this" is ambiguous until she says where.
 
-### Current state of the GitLab repo (as of 2026-08-02)
+### State of both remotes (as of 2026-08-04)
 
-- `main` is at `aa54b1b8`, 26 February 2026, and predates the strip-to-Tales-only
-  cleanup. It still carries the 8 removed products.
-- `audit/metrics-reconciliation` (all of 2.0) was pushed there and built cleanly;
-  the image is in the registry as `rkremen/talestogo:audit-metrics-reconciliation`.
+**They have drifted, deliberately.** GitHub `main` carries 2.0.1 and is tagged
+`v2.0.0` and `v2.0.1`. GitLab `main` is still at `7aec4940` (2.0.0), 11 commits
+behind, and that is what `tales.pppl.gov` is running.
+
+The drift is fine to leave for now. Of the 11 commits, the only functional change
+is the `/health` version stamp; the rest is documentation, the Docker Hub
+description, and the GitHub image-publishing workflow, none of which affects a
+PPPL deployment. GitLab is 0 ahead, so the eventual sync is a **fast-forward** and
+needs none of the force-push dance below.
+
+**Before syncing GitLab, wire up the build args.** `.gitlab-ci.yml` passes only
+`VITE_API_URL` and `VITE_MICROSOFT_CLIENT_ID` to Kaniko, not `APP_VERSION`,
+`GIT_SHA` or `BUILD_DATE`. Push as-is and `/health` on tales.pppl.gov reports
+`"unknown"` for all three, so the one change PPPL would actually benefit from
+arrives dead, and you are back to counting routes to verify a deploy.
+
+- GitLab `main` was `aa54b1b8` (26 February 2026, pre-strip, still carrying the 8
+  removed products) until it was force-pushed to 2.0 on 2026-08-02.
 - The histories ARE related, common ancestor `021952da`, contrary to an earlier
   note in this file that said otherwise.
-- Local tag `archive/pppl-main-2026-02-26` anchors the old GitLab `main` in case
-  it is ever overwritten. It is deliberately not pushed, because a tag push would
-  trigger a CI build of the February codebase.
+- Local tag `archive/pppl-main-2026-02-26` anchors the old GitLab `main`. It is
+  deliberately not pushed, because a tag push would trigger a CI build of the
+  February codebase.
+- `main` on GitLab is protected with `allow_force_push=False`. For a
+  non-fast-forward push, PATCH it true via the API, push, PATCH it back, all in
+  the same minute. A fast-forward needs none of that.
+
+### Verifying a PPPL deploy
+
+**HTTP 200 does not mean the new build is live.** The swarm restart is rolling,
+so the old container answers 200 perfectly well while the new one is still
+coming up. This produced a false "deploy complete" during the 2.0 release.
+
+Check for a capability that only the new build has. The route count in
+`/openapi.json` is the cheapest signal (2.0 = 124 routes), or grep the frontend
+bundle at `/assets/index-*.js` for a new string. The bundle filename hash changes
+on every build, which also distinguishes one deploy from the next.
 
 ### The third place, which is never a destination
 
@@ -467,33 +495,82 @@ in `app/migrations/run_migrations.py` suppressed inline with its reason: the
 table name comes from a hardcoded whitelist and a table name cannot be a bound
 parameter), pip-audit 0 unaccepted, npm audit 0 unaccepted.
 
+### Session 6: 2026-08-02, shipped 2.0 and what deploying taught us
+
+**Tales 2.0 is released.** GitHub `main` = `7aec4940` (PR #25), tagged `v2.0.0`.
+GitLab `main` is the same commit and is live on `tales.pppl.gov` with PPPL's data
+imported. 365 tests, 171 routes, all scans clean.
+
+#### PPPL data migration, done
+
+2044 responses, 22 queries, 17 competitors, 14 descriptors, 28 batches, exported
+from the Tales-Production Railway database and imported against
+`rkremen@pppl.gov`. Grounding recorded for every row, zero unknown.
+
+The source already recorded grounding as `web_search_enabled`, so
+`--grounded-from` was not needed. That mattered: PPPL's July 2026 switch is
+132 grounded against 44 ungrounded, a mid-month changeover no single date
+describes. **The `sources` column is NOT a proxy for grounding**; measured on the
+real data it points the wrong way (8% of grounded responses cite sources against
+14% of ungrounded ones). An earlier version of the migration doc recommended it
+and was wrong.
+
+#### Four bugs that only appear when you deploy
+
+None were findable from the code alone. All are fixed.
+
+1. **Schema drift.** `create_all()` never ALTERs existing tables, so PPPL's
+   February database was missing 8 columns. It broke the LLM Configuration page,
+   Brand Mentions, and every investigation, with no visible connection between
+   them. `app/main.py` now reconciles the models against the live schema on
+   startup and adds any missing nullable column. This replaced a hand-maintained
+   ALTER list that had fallen behind twice. **Any migration shipped only as a
+   script in `migrations/` will recreate this, because nobody runs those.**
+2. **Env vars documented but not passed through** `docker-compose.yml`, so
+   setting `INVESTIGATIONS_AUTO_TRIGGER=false` in Portainer did nothing.
+3. **A 500 rendered as "Failed to save provider"**, sending everyone to inspect
+   the form instead of the server. `frontend/src/utils/apiError.ts` now always
+   includes the status code, flattens FastAPI's validation arrays, and
+   distinguishes a request that never completed.
+4. **The frontend test gate was always red**, because vitest was collecting the
+   Playwright specs in `e2e/`. A suite that is always red cannot report a
+   regression.
+
+#### Notes for working on the PPPL deployment
+
+- The container images are `python:3.14-slim`: **no `curl`, no `wget`, no
+  `gunzip`**. Use Python's `urllib` and `gzip`, which is what the Dockerfile's
+  own HEALTHCHECK does.
+- Portainer CE has no file upload. Large files go via the GitLab generic package
+  registry (the project is private) or `docker cp` with a shell on the host.
+- PPPL's OHMIC gateway routes by model name, so `gpt-5.5` and Gemini really are
+  those models and both ground correctly. **Every Anthropic model on OHMIC
+  silently fails to ground**: the gateway forwards the `web_search` tool but
+  never executes it, and the model then answers from memory opening "Based on my
+  search". `scripts/admin/probe_llm_gateway.py` proves this by running the same
+  question with and without the tool. PPPL uses direct vendor keys instead.
+
 ### NEXT SESSION
 
-1. **Merge plan for 2.0 on GitHub.** `release/2.0` was already merged to `main`
-   via PR #23, and `release/2.0` is a direct ancestor of this branch, so this is
-   a clean fast-forward with no force-push. Suggested: fast-forward `release/2.0`
-   onto this work, PR to `main`, then tag `v2.0.0` (the only tag today is
-   `v1.0.0`). Note `main` has since also taken the change-password commit via
-   PR #24, so the fast-forward must account for it. Do **not** force-push over
-   the existing 2.0 commits; they are public and may have been cloned.
-   **Confirm with Rachel that GitHub is the intended destination before pushing;
-   see "Two Destinations" at the top of this file.**
-1b. **The GitLab side is already part-done.** `audit/metrics-reconciliation` was
-   pushed to `pppl` on 2026-08-02 and built cleanly (pipeline 303085, image
-   `rkremen/talestogo:audit-metrics-reconciliation`). The live site was NOT
-   touched, because the deploy job only runs on the default branch. The cutover
-   still to do: back up the PPPL Postgres, point the Portainer stack at that
-   branch image tag to test 2.0 on real infrastructure, and only then decide
-   about GitLab `main`.
-2. **Investigations follow-ups, both deliberately deferred:** per-brand
-   thresholds (today they are deployment-wide, and `threshold_for` is the single
-   place a per-brand setting would land), and batch-mode auto-triggers (only
-   month-over-month fires automatically; a single batch is too noisy to raise an
-   investigation over).
-3. **No grounded round-trip has been exercised.** Every investigation test stubs
-   the model. The first real run on a deployment with live keys is worth
-   watching, particularly the Google and OpenAI tool-use adapters, which were
-   verified against their SDK surfaces but not against the live APIs.
+1. **No CI runs tests or SAST on either remote.** GitLab CI only builds and
+   deploys; GitHub has only `dast.yml`. Every green result during the 2.0
+   release came from running `pytest` and `./scripts/run_sast.sh` by hand, so
+   the gate is a habit rather than a gate. A GitHub Actions workflow on PRs plus
+   a `test` stage before `build` in `.gitlab-ci.yml` would fix it. Semgrep needs
+   the local-rules path there; `scripts/fetch_semgrep_rules.sh` already handles
+   it.
+2. **`deploy_to_portainer` cannot fail.** Its script is
+   `curl ... || echo "Warning"`, so the job reports success whether the webhook
+   fired, 404'd, or the variable was empty. Same conflation of *tried* and
+   *succeeded* that this release spent its time removing.
+3. **Investigations follow-ups, both deliberately deferred:** per-brand
+   thresholds (deployment-wide today, and `threshold_for` is the single place a
+   per-brand setting would land), and batch-mode auto-triggers (only
+   month-over-month fires automatically; a single batch is too noisy).
+4. **Send the PNNL/labs update email.** It now has a release page to point at:
+   `https://github.com/rtwodeetwo/talestogo/releases/tag/v2.0.0`. The two things
+   a lab most needs are that their numbers will change, and that upgrading now
+   works.
 
 ### Earlier: session 3 handover
 

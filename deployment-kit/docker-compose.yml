@@ -20,10 +20,14 @@ services:
     #   curl http://localhost:8080/health
     # which reports the version, commit and build date baked in at build time.
     #
-    # TODO: pin this to a version tag (e.g. rtwodeetwo/tales:2.0.1) once the
-    # first release build has published one. Do not pin ahead of that: this file
-    # is served live from GitHub's main branch, so naming a tag that does not
-    # exist yet breaks `docker compose up` for anyone who pulls the kit.
+    # `latest` is deliberate here, and it means "the most recent release", not
+    # "the tip of main": the publish workflow moves `latest` only on a version
+    # tag. This file is served live from GitHub's main branch, so leaving it
+    # unpinned is what keeps a fresh `docker compose up` current.
+    #
+    # To pin instead, name a released version, e.g. rtwodeetwo/tales:2.0.1.
+    # The copy of this file inside a release's deployment-kit zip IS pinned,
+    # because a snapshot should keep meaning what it meant on the day.
     image: rtwodeetwo/tales:latest
     ports:
       - "${APP_PORT:-8080}:8000"
