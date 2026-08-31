@@ -208,7 +208,7 @@ This is the simplest option and requires no additional configuration:
 1. Create the initial admin using the setup script (see above)
 2. Admin logs in with the generated email/password credentials
 3. Admin invites users via the Admin Panel
-4. New users receive credentials (via email if Resend is configured, or manually shared)
+4. Each invited user gets a personal set-your-password link (valid for 7 days). The invitation email delivers it automatically when email is configured (Resend API key); otherwise, the Admin Panel shows the link after the invite so you can share it manually. Resending an invitation issues a fresh link.
 
 ### Optional: OAuth (Google/Microsoft)
 

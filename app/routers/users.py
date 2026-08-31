@@ -18,9 +18,15 @@ from ..database import get_db
 from ..auth import (
     get_current_admin_user,
     get_password_hash,
+    create_invitation_token,
     verify_invitation_token,
     create_access_token,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    ENABLE_LOCAL_AUTH,
+    ENABLE_MICROSOFT_AUTH,
+    ENABLE_GOOGLE_AUTH,
+    MICROSOFT_CLIENT_ID,
+    GOOGLE_CLIENT_ID,
 )
 from ..services.site_config import get_site_url, get_site_name, get_admin_email
 
@@ -135,9 +141,12 @@ def create_invitation(
     db: Session = Depends(get_db)
 ):
     """
-    Add user email to approved list (admin only).
-    User can then login directly with Google OAuth.
-    No invitation token needed - just tell them to visit the site and sign in with Google.
+    Create a pre-approved user (admin only).
+
+    When local (email/password) auth is enabled, this also mints an invitation
+    token so the new user can set their initial password at /invite/accept.
+    With OAuth-only auth, no token is needed: the user just signs in with their
+    identity provider and the pre-approved account is matched by email.
     """
     # Check if user already exists
     existing_user = crud.get_user_by_email(db, email=invitation.email)
@@ -145,6 +154,15 @@ def create_invitation(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists"
+        )
+
+    # With local auth enabled, mint a set-your-password invitation token
+    invitation_token = None
+    invitation_expires_at = None
+    if ENABLE_LOCAL_AUTH:
+        invitation_token, invitation_expires_at = create_invitation_token(
+            email=invitation.email,
+            full_name=invitation.full_name,
         )
 
     # Create pre-approved user (active and ready for OAuth login)
@@ -156,23 +174,27 @@ def create_invitation(
         full_name=invitation.full_name,
         organization=invitation.organization,
         is_invited=True,
-        is_active=True,  # Pre-approved, will be activated on first Google login
-        invitation_token=None,
-        invitation_expires_at=None,
+        is_active=True,  # Pre-approved for OAuth login; local auth needs /invite/accept
+        invitation_token=invitation_token,
+        invitation_expires_at=invitation_expires_at,
         tenant_id=tenant_id,  # Use specified tenant or admin's tenant
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    # Return the configured site URL (Site Settings DB > FRONTEND_URL env > localhost fallback)
+    # Site URL comes from Site Settings DB > FRONTEND_URL env > localhost fallback
+    site_url = get_site_url(db)
     return schemas.InvitationResponse(
         email=invitation.email,
         full_name=invitation.full_name,
-        # Empty placeholder: this flow issues no token
-        invitation_token="",  # nosec B106
-        expires_at=None,
-        invitation_url=get_site_url(db)  # Just send them to the main site
+        # Empty placeholder when OAuth-only: that flow issues no token
+        invitation_token=invitation_token or "",  # nosec B106
+        expires_at=invitation_expires_at,
+        invitation_url=(
+            f"{site_url}/invite/accept?token={invitation_token}"
+            if invitation_token else site_url
+        )
     )
 
 
@@ -198,14 +220,36 @@ async def send_invitation_email(
     site_name = get_site_name(db)
     admin_email = get_admin_email(db)
 
-    # Determine email domain
-    domain = user.email.split('@')[1].lower()
+    # Build login instructions from the auth methods this deployment has enabled
+    google_enabled = ENABLE_GOOGLE_AUTH and bool(GOOGLE_CLIENT_ID)
+    ms_enabled = ENABLE_MICROSOFT_AUTH and bool(MICROSOFT_CLIENT_ID)
 
-    # Determine login method based on domain
-    if domain == 'gmail.com':
-        login_instruction = f'- Click "Sign in with Google."\n- Log in with {user.email}.'
-    else:
-        login_instruction = f'- Sign in with {user.email} using the Google or Microsoft login buttons.'
+    instructions = []
+    if ENABLE_LOCAL_AUTH and not user.hashed_password:
+        # Mint a fresh set-your-password token on every send, so resending an
+        # invitation also revives one that has expired.
+        token, expires_at = create_invitation_token(
+            email=user.email,
+            full_name=user.full_name or user.email,
+        )
+        user.invitation_token = token
+        user.invitation_expires_at = expires_at
+        db.commit()
+        instructions.append(
+            f"- Set your password here (link valid for 7 days):\n"
+            f"  {site_url}/invite/accept?token={token}"
+        )
+    elif ENABLE_LOCAL_AUTH:
+        instructions.append(f"- Sign in with your email ({user.email}) and password.")
+    if google_enabled or ms_enabled:
+        providers = " or ".join(
+            name for name, enabled in (("Google", google_enabled), ("Microsoft", ms_enabled)) if enabled
+        )
+        prefix = "- Or sign" if instructions else "- Sign"
+        instructions.append(f"{prefix} in with {user.email} using the {providers} login button.")
+    if not instructions:
+        instructions.append(f"- Sign in with {user.email}.")
+    login_instruction = "\n".join(instructions)
 
     # Build contact line only if admin email is configured
     contact_line = f"Questions? Contact {admin_email}." if admin_email else ""
@@ -259,7 +303,9 @@ def validate_invitation(token: str, db: Session = Depends(get_db)):
             detail="Invitation not found"
         )
 
-    if user.is_active:
+    # Invited users are pre-activated so OAuth login works immediately, so
+    # "already used" means a local password has been set, not is_active.
+    if user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This invitation has already been used"
@@ -304,7 +350,9 @@ def accept_invitation(
             detail="Invitation not found"
         )
 
-    if user.is_active:
+    # Invited users are pre-activated so OAuth login works immediately, so
+    # "already used" means a local password has been set, not is_active.
+    if user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This invitation has already been used"
