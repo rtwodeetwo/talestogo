@@ -403,6 +403,8 @@ Manage user accounts for your organization.
 4. Select their role (User or Admin)
 5. Click Send Invitation
 
+What the new user receives depends on how your deployment signs people in. With email/password login enabled, the invitation email contains a link to set their initial password (valid for 7 days; resend the invitation to issue a fresh link). With Google or Microsoft sign-in configured, they can also just sign in with the matching account. If the invitation email fails to send (for example, no email service is configured), the set-password link is shown to you so you can share it directly.
+
 **User Actions:**
 - **Activate/Deactivate** - Control user access
 - **Make Admin** - Grant admin privileges

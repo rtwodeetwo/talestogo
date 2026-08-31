@@ -243,7 +243,12 @@ const UserManagement: React.FC = () => {
 
     try {
       const tenantIdToUse = inviteTenantId === '' ? undefined : inviteTenantId;
-      await adminAPI.createInvitation(inviteEmail, inviteFullName, inviteOrganization, tenantIdToUse);
+      const invitation = await adminAPI.createInvitation(inviteEmail, inviteFullName, inviteOrganization, tenantIdToUse);
+      // With local auth enabled the backend mints a set-password link; keep it
+      // so the admin can share it manually if the invitation email fails.
+      const setPasswordLink = invitation?.invitation_url?.includes('/invite/accept')
+        ? invitation.invitation_url
+        : null;
 
       setInviteDialogOpen(false);
       setInviteEmail('');
@@ -263,7 +268,11 @@ const UserManagement: React.FC = () => {
         } catch (emailErr) {
           console.error('Failed to send invitation email:', emailErr);
           setSuccess(`User ${inviteEmail} added successfully`);
-          setError('Note: Invitation email failed to send.');
+          setError(
+            setPasswordLink
+              ? `Invitation email failed to send. Share this set-password link with them directly: ${setPasswordLink}`
+              : 'Note: Invitation email failed to send.'
+          );
         }
       } else {
         setSuccess(`User ${inviteEmail} added successfully`);
