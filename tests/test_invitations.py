@@ -217,3 +217,37 @@ def test_send_invitation_email_oauth_only_has_no_password_link(client, session_f
     assert resp.status_code == 200
     assert "/invite/accept" not in sent["body"]
     assert "Google" in sent["body"]
+
+
+def test_send_invitation_email_leads_with_sso_when_both_enabled(client, session_factory, monkeypatch):
+    """
+    On a deployment running both local auth and SSO (the default env), an
+    invited lab user should be told to use their work account first, with the
+    set-password link offered as the alternative. Leading with the password
+    link sends Entra ID users down the wrong path.
+    """
+    monkeypatch.setattr(users_router, "ENABLE_LOCAL_AUTH", True)
+    monkeypatch.setattr(users_router, "ENABLE_MICROSOFT_AUTH", True)
+    monkeypatch.setattr(users_router, "MICROSOFT_CLIENT_ID", "test-client-id")
+    invite(client, email="newuser@pnnl.gov")
+    user = get_user(session_factory, "newuser@pnnl.gov")
+
+    sent = {}
+
+    async def fake_send_email(to, subject, body):
+        sent.update(to=to, subject=subject, body=body)
+
+    import app.services.email_notifications as email_notifications
+    monkeypatch.setattr(email_notifications, "send_email", fake_send_email)
+
+    resp = client.post(f"/admin/users/{user.id}/send-invitation")
+    assert resp.status_code == 200
+
+    body = sent["body"]
+    # Both routes are offered...
+    assert "Sign in with Microsoft" in body
+    assert "/invite/accept?token=" in body
+    # ...but the SSO instruction comes first.
+    assert body.index("Sign in with Microsoft") < body.index("/invite/accept?token=")
+    # Google is not advertised on a Microsoft-only deployment
+    assert "Google" not in body

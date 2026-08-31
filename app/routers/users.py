@@ -220,11 +220,18 @@ async def send_invitation_email(
     site_name = get_site_name(db)
     admin_email = get_admin_email(db)
 
-    # Build login instructions from the auth methods this deployment has enabled
+    # Build sign-in instructions from the auth methods this deployment actually
+    # has enabled. Deployments differ: some sites are single sign-on only, some
+    # are email/password only, some run both. Where SSO exists it leads, since
+    # that is the account the recipient already has; a password is offered as
+    # the alternative rather than as the first step.
     google_enabled = ENABLE_GOOGLE_AUTH and bool(GOOGLE_CLIENT_ID)
     ms_enabled = ENABLE_MICROSOFT_AUTH and bool(MICROSOFT_CLIENT_ID)
+    sso_providers = " or ".join(
+        name for name, enabled in (("Google", google_enabled), ("Microsoft", ms_enabled)) if enabled
+    )
 
-    instructions = []
+    password_link = None
     if ENABLE_LOCAL_AUTH and not user.hashed_password:
         # Mint a fresh set-your-password token on every send, so resending an
         # invitation also revives one that has expired.
@@ -235,36 +242,49 @@ async def send_invitation_email(
         user.invitation_token = token
         user.invitation_expires_at = expires_at
         db.commit()
+        password_link = f"{site_url}/invite/accept?token={token}"
+
+    instructions = []
+    if sso_providers:
         instructions.append(
-            f"- Set your password here (link valid for 7 days):\n"
-            f"  {site_url}/invite/accept?token={token}"
+            f'- Click "Sign in with {sso_providers}" and use {user.email}, the same '
+            f"account you already sign in with at work. You do not need to create a "
+            f"password."
+        )
+        if password_link:
+            instructions.append(
+                f"- Would you rather use a password? Set one here instead (link good "
+                f"for 7 days):\n  {password_link}"
+            )
+    elif password_link:
+        instructions.append(
+            f"- Set your password (link good for 7 days):\n  {password_link}"
+        )
+        instructions.append(
+            f"- Then sign in with {user.email} and the password you chose."
         )
     elif ENABLE_LOCAL_AUTH:
-        instructions.append(f"- Sign in with your email ({user.email}) and password.")
-    if google_enabled or ms_enabled:
-        providers = " or ".join(
-            name for name, enabled in (("Google", google_enabled), ("Microsoft", ms_enabled)) if enabled
-        )
-        prefix = "- Or sign" if instructions else "- Sign"
-        instructions.append(f"{prefix} in with {user.email} using the {providers} login button.")
-    if not instructions:
+        instructions.append(f"- Sign in with {user.email} and your password.")
+    else:
         instructions.append(f"- Sign in with {user.email}.")
     login_instruction = "\n".join(instructions)
 
-    # Build contact line only if admin email is configured
-    contact_line = f"Questions? Contact {admin_email}." if admin_email else ""
+    # Build contact line only if an admin email is configured
+    contact_line = f"\nQuestions? Contact {admin_email}.\n" if admin_email else ""
 
-    subject = 'Welcome to Tales - Shape Your AI Story'
+    subject = f"Welcome to {site_name} - Shape Your AI Story"
     body = f"""Hi {user.full_name or user.email},
 
-You've been invited to Tales, where AI meets brand intelligence. Now you have the power to track what the AIs are saying about your Lab!
+You've been invited to {site_name}, where AI meets brand intelligence. Now you have the power to track what the AIs are saying about your organization!
 
-Your story starts at {site_url}.
+Your account is ready. Here is how to sign in at {site_url}:
+
 {login_instruction}
-- Click on Customize and start adding information about your brands!
 
+Once you are in, click Customize and start adding information about your brands.
+{contact_line}
 Best regards,
-The Tales Team"""
+The {site_name} Team"""
 
     # Send email
     try:
