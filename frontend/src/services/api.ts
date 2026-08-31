@@ -63,8 +63,12 @@ api.interceptors.response.use(
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
 
-      // Redirect to login if not already there
-      if (!window.location.pathname.includes('/login')) {
+      // Redirect to login, unless we're already there or on a public page
+      // that unauthenticated visitors must be able to reach. Background calls
+      // (tenant context, task status) 401 for logged-out visitors, and that
+      // must not hijack the set-password or registration pages.
+      const publicPaths = ['/login', '/register', '/invite/accept'];
+      if (!publicPaths.some((path) => window.location.pathname.includes(path))) {
         window.location.href = '/login';
       }
     }
