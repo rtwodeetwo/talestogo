@@ -727,7 +727,7 @@ Tales uses a nonce-based CSP for style-src, which allows MUI/Material-UI styles 
 - **Path traversal protection**: The frontend catch-all route validates file paths stay within the expected directory
 - **Cloud metadata blocking**: Requests to cloud provider metadata endpoints (AWS, GCP, Azure) are blocked to prevent SSRF attacks
 - **Self-hosted fonts**: All fonts are served from the application itself, eliminating external CDN dependencies
-- **Password validation**: Login password fields enforce a maximum length of 128 characters
+- **Password validation**: Passwords are between 8 and 72 bytes when set (bcrypt hashes at most 72 bytes, and accented or non-Latin characters count as more than one). The login field accepts up to 128 characters, so an over-length attempt is a plain failed login rather than a hint about the limit.
 
 ---
 
