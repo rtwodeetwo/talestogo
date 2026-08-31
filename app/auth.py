@@ -87,15 +87,41 @@ cipher_suite = Fernet(ENCRYPTION_KEY.encode())
 security = HTTPBearer()
 
 
+# bcrypt hashes at most 72 bytes of input and raises ValueError on anything
+# longer. The limit is on UTF-8 bytes, not characters: 72 non-ASCII characters
+# can be well over 72 bytes. Unguarded, a long password turned into an
+# unhandled 500 on login and on the set-your-password page.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
+    """
+    Verify a password against its hash.
+
+    An over-length password simply does not match: no stored hash can have been
+    produced from one, because get_password_hash rejects them too. Returning
+    False here keeps a long password a plain 401 rather than a 500.
+    """
     password_bytes = plain_password.encode('utf-8')
+    if len(password_bytes) > BCRYPT_MAX_PASSWORD_BYTES:
+        return False
     hashed_bytes = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_bytes, hashed_bytes)
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password for storage."""
+    """
+    Hash a password for storage.
+
+    Raises ValueError on an over-length password rather than truncating it:
+    silently hashing only the first 72 bytes would let a user believe a longer
+    password protects their account. Callers that take a password from a
+    request should validate it at the schema layer so this stays unreachable.
+    """
+    if len(password.encode('utf-8')) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"Password must be at most {BCRYPT_MAX_PASSWORD_BYTES} bytes"
+        )
     password_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(password_bytes, salt)

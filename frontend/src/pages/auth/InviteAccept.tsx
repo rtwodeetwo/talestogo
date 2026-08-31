@@ -131,6 +131,14 @@ export default function InviteAccept() {
       return;
     }
 
+    // bcrypt hashes at most 72 bytes, so the server rejects anything longer.
+    // Measured in bytes, not characters: accented and non-Latin text runs to
+    // more than one byte each, so a short-looking password can still exceed it.
+    if (new TextEncoder().encode(password).length > 72) {
+      setPasswordError('Password is too long. Please use at most 72 characters.');
+      return;
+    }
+
     if (password !== confirmPassword) {
       setPasswordError('Passwords do not match');
       return;
@@ -255,8 +263,11 @@ export default function InviteAccept() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 margin="normal"
-                helperText="At least 8 characters"
-                error={!!passwordError && passwordError.includes('8 characters')}
+                helperText="Between 8 and 72 characters"
+                error={
+                  !!passwordError &&
+                  (passwordError.includes('8 characters') || passwordError.includes('too long'))
+                }
                 sx={bodyFontSx}
               />
 

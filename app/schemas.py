@@ -455,8 +455,30 @@ class UserBase(BaseModel):
     full_name: Optional[str] = None
     organization: Optional[str] = None
 
+# bcrypt hashes at most 72 bytes of input, so a longer password cannot be
+# stored at all. Enforced on UTF-8 bytes rather than characters, because a
+# 72-character password of non-ASCII text is longer than 72 bytes. Applied
+# wherever a password is *set*; UserLogin deliberately stays permissive so a
+# too-long password is a plain 401 rather than a hint about the limit.
+MAX_PASSWORD_BYTES = 72
+
+
+def _fits_bcrypt(value: str) -> str:
+    if len(value.encode('utf-8')) > MAX_PASSWORD_BYTES:
+        raise ValueError(
+            f"Password must be at most {MAX_PASSWORD_BYTES} bytes "
+            "(accented and non-Latin characters count as more than one)"
+        )
+    return value
+
+
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(..., min_length=8)
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_length(cls, v: str) -> str:
+        return _fits_bcrypt(v)
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -478,6 +500,11 @@ class PasswordChange(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=128)
     new_password: str = Field(..., min_length=8, max_length=128)
     model_config = ConfigDict(extra='forbid')
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_password_length(cls, v: str) -> str:
+        return _fits_bcrypt(v)
 
 class User(UserBase):
     id: int
@@ -564,7 +591,12 @@ class InvitationValidate(BaseModel):
 class InvitationAccept(BaseModel):
     """Schema for accepting invitation and setting password"""
     token: str
-    password: str
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_length(cls, v: str) -> str:
+        return _fits_bcrypt(v)
 
 # --- Task Status Schemas ---
 class TaskStatus(BaseModel):
