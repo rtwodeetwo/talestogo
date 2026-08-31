@@ -208,7 +208,7 @@ This is the simplest option and requires no additional configuration:
 1. Create the initial admin using the setup script (see above)
 2. Admin logs in with the generated email/password credentials
 3. Admin invites users via the Admin Panel
-4. Each invited user gets a personal set-your-password link (valid for 7 days). The invitation email delivers it automatically when email is configured (Resend API key); otherwise, the Admin Panel shows the link after the invite so you can share it manually. Resending an invitation issues a fresh link.
+4. How the user signs in for the first time depends on `ENABLE_LOCAL_AUTH`. With email/password login enabled, each invited user gets a personal set-your-password link (valid for 7 days), delivered by the invitation email when email is configured (Resend API key); otherwise the Admin Panel shows the link after the invite so you can share it manually, and resending an invitation issues a fresh one. On a single-sign-on-only deployment (`ENABLE_LOCAL_AUTH=false`) no link is needed or generated: the account is already approved, and the user simply signs in with Google or Microsoft using the invited email address.
 
 ### Optional: OAuth (Google/Microsoft)
 
