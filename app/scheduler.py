@@ -234,6 +234,28 @@ _running_schedules = set()
 _running_brands = set()
 
 
+# Days of the month on which the fixed collection cron fires, and its UTC time.
+# start_scheduler() builds the CronTrigger from these, and the notification
+# email uses them to say when the next run is. The per-brand next_collection_at
+# column is not maintained by this scheduler (production still holds a
+# 2026-02-02 date there), so it must not be quoted to a reader.
+COLLECTION_DAYS = (1, 7, 14, 21)
+COLLECTION_HOUR_UTC = 6
+COLLECTION_MINUTE_UTC = 30
+
+
+def next_fixed_collection(after: datetime) -> datetime:
+    """Return the first fixed collection time (naive UTC) strictly after `after`."""
+    month_start = after.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    for _ in range(3):
+        for day in COLLECTION_DAYS:
+            run_at = month_start.replace(day=day, hour=COLLECTION_HOUR_UTC, minute=COLLECTION_MINUTE_UTC)
+            if run_at > after:
+                return run_at
+        month_start = month_start + relativedelta(months=1)
+    return after
+
+
 # === NEW SYSTEM-WIDE COLLECTION AND ANALYSIS FUNCTIONS ===
 
 async def run_scheduled_collection_all_brands():
@@ -242,7 +264,8 @@ async def run_scheduled_collection_all_brands():
 
     This runs on the 1st, 7th, 14th, and 21st of each month at 6:30 AM UTC.
     Collection runs first, then analysis runs on the collected responses.
-    Email notifications are NOT sent (silent collection + analysis).
+    A run that fails, or only partly succeeds, emails the schedule's
+    notification address; a clean run stays silent.
     Reports are generated separately on scheduled dates.
     """
     logger.info("=" * 60)
@@ -379,10 +402,11 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
 
 async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_id: int):
     """
-    Execute data collection followed by analysis (no email).
+    Execute data collection followed by analysis.
 
-    Used by weekly scheduled collection.
-    Does NOT send email notifications.
+    Used by the scheduled collection.
+    Emails the schedule's notification address only when the run fails or
+    is partial; a successful run sends nothing.
 
     Steps:
     1. Run collection to gather responses from LLM platforms
@@ -439,6 +463,7 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
             history.completed_at = datetime.utcnow()
             db.commit()
             logger.warning(f"Collection failed for brand {brand_id}: {history.error_message}")
+            await notify_if_failed(schedule, history, db)
             return
 
         history.collection_responses = collection_result.get("responses_collected", 0)
@@ -474,7 +499,9 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
         history.completed_at = datetime.utcnow()
         db.commit()
 
-        # NOTE: No email notification - collection + analysis runs silently
+        # A clean run stays silent; a partial one (collection OK, analysis
+        # failed) is reported the same way as a failure.
+        await notify_if_failed(schedule, history, db)
         logger.info(f"Completed collection + analysis for brand {brand_id}")
 
     except Exception as e:
@@ -485,6 +512,7 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
                 history.error_message = f"Unexpected error: {str(e)}"
                 history.completed_at = datetime.utcnow()
                 db.commit()
+                await notify_if_failed(locals().get('schedule'), history, db)
             except Exception:
                 # Already handling a failure; keep the original error as the
                 # one that surfaces, but don't let this one vanish silently.
@@ -695,6 +723,28 @@ async def wait_for_pipeline_completion(task_id: int, db: Session, timeout: int =
         await asyncio.sleep(15)  # Poll every 15 seconds
 
 
+async def notify_if_failed(schedule, history: ScheduledTaskHistory, db: Session):
+    """
+    Email the schedule's notification address when a scheduled run did not
+    fully succeed. Successful runs stay silent, as before.
+
+    Scheduled runs used to send nothing at all, so the 2026-09-07 06:30 UTC
+    failure on tales.pppl.gov sat unnoticed until someone opened the
+    Collections dropdown. Honors send_email_notification on the schedule and
+    never raises: a broken mail backend must not turn a recorded failure into
+    an unrecorded one. Needs a mail backend (SMTP_HOST, or RESEND_API_KEY
+    with FROM_EMAIL); without one, send_email logs the omission.
+    """
+    try:
+        if schedule is None or not getattr(schedule, "send_email_notification", True):
+            return
+        if history.status == 'success':
+            return
+        await send_completion_email(schedule, history, db, "collection")
+    except Exception as e:
+        logger.error(f"Failed to send scheduled-run failure email: {e}")
+
+
 async def send_completion_email(schedule: ScheduledTask, history: ScheduledTaskHistory, db: Session, task_type: str = "collection"):
     """Send email notification about completed collection task"""
     try:
@@ -706,7 +756,9 @@ async def send_completion_email(schedule: ScheduledTask, history: ScheduledTaskH
             return
 
         email_to = schedule.notification_email or user.email
-        next_collection = schedule.next_collection_at or schedule.next_run_at
+        # Derived from the cron, not from schedule.next_collection_at, which
+        # this scheduler does not maintain.
+        next_collection = next_fixed_collection(datetime.utcnow())
 
         if history.status == 'success':
             subject = f"TALES Data Collection Complete - {brand.brand_name}"
@@ -719,7 +771,7 @@ Responses Analyzed: {history.analysis_responses or 'Processing'}
 
 View your results: {get_site_url(db).rstrip('/')}/analytics
 
-Next scheduled collection: {next_collection.strftime('%B %d, %Y at %I:%M %p') if next_collection else 'Not scheduled'}
+Next scheduled collection: {next_collection.strftime('%B %d, %Y at %H:%M UTC') if next_collection else 'Not scheduled'}
 
 --
 TALES - AI Reputation Intelligence & Optimization
@@ -738,7 +790,7 @@ Responses Analyzed: {history.analysis_responses or 0}
 
 Please log in to review and manually re-run if needed: {get_site_url(db).rstrip('/')}/data
 
-Next scheduled collection: {next_collection.strftime('%B %d, %Y at %I:%M %p') if next_collection else 'Not scheduled'}
+Next scheduled collection: {next_collection.strftime('%B %d, %Y at %H:%M UTC') if next_collection else 'Not scheduled'}
 
 --
 TALES - AI Reputation Intelligence & Optimization
@@ -835,7 +887,8 @@ def start_scheduler():
         # Data collection + analysis: 1st, 7th, 14th, and 21st of each month at 6:30 AM UTC
         scheduler.add_job(
             lambda: asyncio.run(run_scheduled_collection_all_brands()),
-            CronTrigger(day='1,7,14,21', hour=6, minute=30),
+            CronTrigger(day=','.join(str(d) for d in COLLECTION_DAYS),
+                        hour=COLLECTION_HOUR_UTC, minute=COLLECTION_MINUTE_UTC),
             id='scheduled_collection_analysis',
             replace_existing=True,
             max_instances=1
