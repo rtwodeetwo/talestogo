@@ -723,6 +723,23 @@ async def wait_for_pipeline_completion(task_id: int, db: Session, timeout: int =
         await asyncio.sleep(15)  # Poll every 15 seconds
 
 
+EASTERN = pytz.timezone('America/New_York')
+
+
+def format_eastern(dt) -> str:
+    """
+    Render a naive UTC datetime for the reader, in Eastern time with the zone
+    named, e.g. "September 14, 2026 at 2:30 AM EDT". The database stores UTC;
+    the people reading these emails are in New Jersey.
+    """
+    if dt is None:
+        return 'Not scheduled'
+    aware = pytz.utc.localize(dt) if dt.tzinfo is None else dt
+    local = aware.astimezone(EASTERN)
+    hour = local.strftime('%I').lstrip('0') or '12'
+    return local.strftime(f'%B %d, %Y at {hour}:%M %p %Z')
+
+
 async def notify_if_failed(schedule, history: ScheduledTaskHistory, db: Session):
     """
     Email the schedule's notification address when a scheduled run did not
@@ -765,13 +782,13 @@ async def send_completion_email(schedule: ScheduledTask, history: ScheduledTaskH
             body = f"""Your scheduled data collection has completed successfully!
 
 Brand: {brand.brand_name}
-Collection Date: {history.started_at.strftime('%B %d, %Y')}
+Collection Date: {format_eastern(history.started_at)}
 Responses Collected: {history.collection_responses or 'Processing'}
 Responses Analyzed: {history.analysis_responses or 'Processing'}
 
 View your results: {get_site_url(db).rstrip('/')}/analytics
 
-Next scheduled collection: {next_collection.strftime('%B %d, %Y at %H:%M UTC') if next_collection else 'Not scheduled'}
+Next scheduled collection: {format_eastern(next_collection)}
 
 --
 TALES - AI Reputation Intelligence & Optimization
@@ -782,7 +799,7 @@ TALES - AI Reputation Intelligence & Optimization
 
 Brand: {brand.brand_name}
 Status: {history.status.upper()}
-Started: {history.started_at.strftime('%B %d, %Y at %I:%M %p')}
+Started: {format_eastern(history.started_at)}
 Error: {history.error_message or 'Unknown error'}
 
 Responses Collected: {history.collection_responses or 0}
@@ -790,7 +807,7 @@ Responses Analyzed: {history.analysis_responses or 0}
 
 Please log in to review and manually re-run if needed: {get_site_url(db).rstrip('/')}/data
 
-Next scheduled collection: {next_collection.strftime('%B %d, %Y at %H:%M UTC') if next_collection else 'Not scheduled'}
+Next scheduled collection: {format_eastern(next_collection)}
 
 --
 TALES - AI Reputation Intelligence & Optimization
