@@ -313,6 +313,91 @@ async def run_scheduled_collection_all_brands():
         db.close()
 
 
+def _record_history(history_id: int, **fields) -> None:
+    """
+    Write `fields` onto a ScheduledTaskHistory row through a session opened
+    for just this write.
+
+    The scheduled run blocks for up to 90 minutes in the collection subprocess
+    and up to 60 more in analysis. A session that is still holding a
+    connection across that wait can come back dead: on 2026-09-14 the
+    connection was dropped during a 48-minute collection, the first write
+    afterwards raised, the except handler's own commit raised again, and the
+    run sat at 'running' forever with its 66 responses never analyzed.
+    pool_pre_ping only validates a connection at checkout, so the cure is to
+    check one out fresh for every write that follows a long wait.
+    """
+    db = SessionLocal()
+    try:
+        history = db.query(ScheduledTaskHistory).filter_by(id=history_id).first()
+        if history is None:
+            logger.warning(f"History row {history_id} vanished; cannot record {sorted(fields)}")
+            return
+        for name, value in fields.items():
+            setattr(history, name, value)
+        db.commit()
+    finally:
+        db.close()
+
+
+async def _finish_run(schedule_id: int, history_id: int, notify: bool, **fields) -> None:
+    """
+    Record a run's outcome and, when `notify` is set, email the schedule's
+    notification address if the outcome was not a success.
+
+    Loads the schedule and history rows afresh so the email never depends on
+    a session that was open during the wait (see _record_history).
+    """
+    fields.setdefault("completed_at", datetime.utcnow())
+    _record_history(history_id, **fields)
+    if not notify:
+        return
+    db = SessionLocal()
+    try:
+        schedule = db.query(ScheduledTask).filter_by(id=schedule_id).first()
+        history = db.query(ScheduledTaskHistory).filter_by(id=history_id).first()
+        if history is not None:
+            await notify_if_failed(schedule, history, db)
+    finally:
+        db.close()
+
+
+def _start_run(schedule_id: int, user_id: int, brand_id: int, label: str):
+    """
+    Stamp the schedule and create the 'running' history row, then release the
+    connection. Returns the new history id, or None if the schedule is missing
+    or disabled. The caller must not hold any session across the collection.
+    """
+    db = SessionLocal()
+    try:
+        schedule = db.query(ScheduledTask).filter_by(id=schedule_id).first()
+        if not schedule or not schedule.is_enabled:
+            logger.info(f"Schedule {schedule_id} not found or not enabled, skipping")
+            return None
+
+        collection_date = datetime.utcnow()
+        logger.info(f"Starting {label} for brand {brand_id} (schedule {schedule_id})")
+
+        # Update last_collection_at immediately
+        schedule.last_collection_at = collection_date
+        schedule.last_run_at = collection_date  # Legacy field
+        db.commit()
+
+        history = ScheduledTaskHistory(
+            scheduled_task_id=schedule.id,
+            user_id=user_id,
+            brand_id=brand_id,
+            started_at=collection_date,
+            status='running'
+        )
+        db.add(history)
+        db.commit()
+        return history.id
+    finally:
+        # Nothing may stay checked out while the collection subprocess runs.
+        db.close()
+
+
 async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int):
     """
     Execute data collection ONLY (no analysis).
@@ -328,35 +413,14 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
         return
 
     _running_brands.add(brand_key)
-    db = SessionLocal()
+    history_id = None
 
     try:
-        schedule = db.query(ScheduledTask).filter_by(id=schedule_id).first()
-        if not schedule or not schedule.is_enabled:
-            logger.info(f"Schedule {schedule_id} not found or not enabled, skipping")
+        history_id = _start_run(schedule_id, user_id, brand_id, "collection-only")
+        if history_id is None:
             return
 
-        collection_date = datetime.utcnow()
-        logger.info(f"Starting collection-only for brand {brand_id} (schedule {schedule_id})")
-
-        # Update last_collection_at immediately
-        schedule.last_collection_at = collection_date
-        schedule.last_run_at = collection_date  # Legacy field
-        db.commit()
-
-        # Create history entry
-        history = ScheduledTaskHistory(
-            scheduled_task_id=schedule.id,
-            user_id=user_id,
-            brand_id=brand_id,
-            started_at=collection_date,
-            status='running'
-        )
-        db.add(history)
-        db.commit()
-        db.refresh(history)
-
-        # Run collection only using the data pipeline
+        # Run collection only using the data pipeline. No session is open here.
         from app.services.data_pipeline import run_collection_only
 
         result = run_collection_only(
@@ -366,27 +430,24 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
         )
 
         if result.get("success"):
-            history.status = 'success'
-            history.collection_responses = result.get("responses_collected", 0)
-            logger.info(f"Collection completed for brand {brand_id}: {history.collection_responses} responses")
+            collected = result.get("responses_collected", 0)
+            logger.info(f"Collection completed for brand {brand_id}: {collected} responses")
+            await _finish_run(schedule_id, history_id, notify=False,
+                              status='success', collection_responses=collected)
         else:
-            history.status = 'failed'
-            history.error_message = result.get("error", "Unknown error")
-            logger.warning(f"Collection failed for brand {brand_id}: {history.error_message}")
-
-        history.completed_at = datetime.utcnow()
-        db.commit()
+            error = result.get("error", "Unknown error")
+            logger.warning(f"Collection failed for brand {brand_id}: {error}")
+            await _finish_run(schedule_id, history_id, notify=False,
+                              status='failed', error_message=error)
 
         # NOTE: No email notification for collection-only runs
 
     except Exception as e:
         logger.error(f"Error in collection-only for brand {brand_id}: {str(e)}", exc_info=True)
-        if 'history' in locals():
+        if history_id is not None:
             try:
-                history.status = 'failed'
-                history.error_message = f"Unexpected error: {str(e)}"
-                history.completed_at = datetime.utcnow()
-                db.commit()
+                await _finish_run(schedule_id, history_id, notify=False,
+                                  status='failed', error_message=f"Unexpected error: {str(e)}")
             except Exception:
                 # Already handling a failure; keep the original error as the
                 # one that surfaces, but don't let this one vanish silently.
@@ -396,7 +457,6 @@ async def execute_collection_only(schedule_id: int, user_id: int, brand_id: int)
                 )
 
     finally:
-        db.close()
         _running_brands.discard(brand_key)
 
 
@@ -411,6 +471,10 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
     Steps:
     1. Run collection to gather responses from LLM platforms
     2. Run analysis on the newly collected responses
+
+    No database session is held open across either step: each lasts long
+    enough for an idle connection to be dropped, and every status write goes
+    through a session opened for that write (see _record_history).
     """
     brand_key = (user_id, brand_id)
 
@@ -420,33 +484,12 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
         return
 
     _running_brands.add(brand_key)
-    db = SessionLocal()
+    history_id = None
 
     try:
-        schedule = db.query(ScheduledTask).filter_by(id=schedule_id).first()
-        if not schedule or not schedule.is_enabled:
-            logger.info(f"Schedule {schedule_id} not found or not enabled, skipping")
+        history_id = _start_run(schedule_id, user_id, brand_id, "collection + analysis")
+        if history_id is None:
             return
-
-        collection_date = datetime.utcnow()
-        logger.info(f"Starting collection + analysis for brand {brand_id} (schedule {schedule_id})")
-
-        # Update last_collection_at immediately
-        schedule.last_collection_at = collection_date
-        schedule.last_run_at = collection_date  # Legacy field
-        db.commit()
-
-        # Create history entry
-        history = ScheduledTaskHistory(
-            scheduled_task_id=schedule.id,
-            user_id=user_id,
-            brand_id=brand_id,
-            started_at=collection_date,
-            status='running'
-        )
-        db.add(history)
-        db.commit()
-        db.refresh(history)
 
         # STEP 1: Run collection
         from app.services.data_pipeline import run_collection_only
@@ -458,17 +501,15 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
         )
 
         if not collection_result.get("success"):
-            history.status = 'failed'
-            history.error_message = collection_result.get("error", "Collection failed")
-            history.completed_at = datetime.utcnow()
-            db.commit()
-            logger.warning(f"Collection failed for brand {brand_id}: {history.error_message}")
-            await notify_if_failed(schedule, history, db)
+            error = collection_result.get("error", "Collection failed")
+            logger.warning(f"Collection failed for brand {brand_id}: {error}")
+            await _finish_run(schedule_id, history_id, notify=True,
+                              status='failed', error_message=error)
             return
 
-        history.collection_responses = collection_result.get("responses_collected", 0)
-        db.commit()
-        logger.info(f"Collection completed for brand {brand_id}: {history.collection_responses} responses")
+        collected = collection_result.get("responses_collected", 0)
+        _record_history(history_id, collection_responses=collected)
+        logger.info(f"Collection completed for brand {brand_id}: {collected} responses")
 
         # STEP 2: Run analysis on the collected responses
         from app.services.data_pipeline import run_analysis_only
@@ -483,36 +524,30 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
             )
 
             if analysis_result.get("success"):
-                history.analysis_responses = analysis_result.get("responses_analyzed", 0)
-                history.status = 'success'
-                logger.info(f"Analysis completed for brand {brand_id}: {history.analysis_responses} responses analyzed")
+                analyzed = analysis_result.get("responses_analyzed", 0)
+                logger.info(f"Analysis completed for brand {brand_id}: {analyzed} responses analyzed")
+                outcome = dict(status='success', analysis_responses=analyzed)
             else:
                 # Analysis failed but collection succeeded - partial success
-                history.status = 'partial'
-                history.error_message = f"Collection OK, analysis failed: {analysis_result.get('error', 'Unknown')}"
-                logger.warning(f"Analysis failed for brand {brand_id}: {history.error_message}")
+                error = f"Collection OK, analysis failed: {analysis_result.get('error', 'Unknown')}"
+                logger.warning(f"Analysis failed for brand {brand_id}: {error}")
+                outcome = dict(status='partial', error_message=error)
         else:
             # No batch ID means no responses collected
-            history.status = 'success'
             logger.info(f"No new responses to analyze for brand {brand_id}")
-
-        history.completed_at = datetime.utcnow()
-        db.commit()
+            outcome = dict(status='success')
 
         # A clean run stays silent; a partial one (collection OK, analysis
         # failed) is reported the same way as a failure.
-        await notify_if_failed(schedule, history, db)
+        await _finish_run(schedule_id, history_id, notify=True, **outcome)
         logger.info(f"Completed collection + analysis for brand {brand_id}")
 
     except Exception as e:
         logger.error(f"Error in collection + analysis for brand {brand_id}: {str(e)}", exc_info=True)
-        if 'history' in locals():
+        if history_id is not None:
             try:
-                history.status = 'failed'
-                history.error_message = f"Unexpected error: {str(e)}"
-                history.completed_at = datetime.utcnow()
-                db.commit()
-                await notify_if_failed(locals().get('schedule'), history, db)
+                await _finish_run(schedule_id, history_id, notify=True,
+                                  status='failed', error_message=f"Unexpected error: {str(e)}")
             except Exception:
                 # Already handling a failure; keep the original error as the
                 # one that surfaces, but don't let this one vanish silently.
@@ -522,7 +557,6 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
                 )
 
     finally:
-        db.close()
         _running_brands.discard(brand_key)
 
 

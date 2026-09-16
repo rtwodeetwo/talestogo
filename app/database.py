@@ -28,12 +28,27 @@ else:
     # max_overflow: additional connections that can be created on demand
     # pool_pre_ping: verify connections are alive before using them
     # pool_recycle: recycle connections after 1 hour to prevent stale connections
+    # TCP keepalives (libpq parameters, honored by psycopg2 and psycopg) so a
+    # connection that sits idle survives network gear that drops quiet TCP
+    # sessions (Docker Swarm's IPVS load balancer defaults to a 15-minute idle
+    # timeout). pool_pre_ping cannot save a connection already checked out:
+    # on 2026-09-14 the scheduler lost one mid-run and the whole collection
+    # went unrecorded. Probes start after 5 idle minutes, 30 seconds apart.
+    connect_args = {}
+    if DATABASE_URL.startswith("postgresql"):
+        connect_args = {
+            "keepalives": 1,
+            "keepalives_idle": 300,
+            "keepalives_interval": 30,
+            "keepalives_count": 3,
+        }
     engine = create_engine(
         DATABASE_URL,
         pool_size=20,          # Increased from default 5
         max_overflow=30,       # Increased from default 10
         pool_pre_ping=True,    # Check connection health
-        pool_recycle=3600      # Recycle after 1 hour
+        pool_recycle=3600,     # Recycle after 1 hour
+        connect_args=connect_args,
     )
 
 # Create a SessionLocal class. Each instance of this class will be a database session.
