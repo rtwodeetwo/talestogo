@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pytz
@@ -237,8 +237,8 @@ _running_brands = set()
 # Days of the month on which the fixed collection cron fires, and its UTC time.
 # start_scheduler() builds the CronTrigger from these, and the notification
 # email uses them to say when the next run is. The per-brand next_collection_at
-# column is not maintained by this scheduler (production still holds a
-# 2026-02-02 date there), so it must not be quoted to a reader.
+# column is kept in step with the cron by _start_run and reconcile_on_startup,
+# but it is a display value only: the CronTrigger decides when a run fires.
 COLLECTION_DAYS = (1, 7, 14, 21)
 COLLECTION_HOUR_UTC = 6
 COLLECTION_MINUTE_UTC = 30
@@ -313,6 +313,107 @@ async def run_scheduled_collection_all_brands():
         db.close()
 
 
+# Collection may take 90 minutes and analysis 60 more. A 'running' history row
+# older than this cannot belong to a live run, in this process or any other.
+ORPHANED_RUN_AFTER = timedelta(hours=3)
+
+# How long after a run starts its collection batch may be created. The batch
+# row is written within seconds; the slack covers a slow subprocess start.
+_BATCH_MATCH_WINDOW = timedelta(minutes=30)
+
+
+def reconcile_on_startup() -> dict:
+    """
+    Repair scheduler bookkeeping that a crash or a dropped connection left
+    wrong. Safe to run on every start, and never raises.
+
+    1. History rows stuck at 'running'. The run that owned the row is gone,
+       so nothing will ever close it. The outcome is rebuilt from the batch
+       the run collected: all responses analyzed is 'success', some or none
+       is 'partial', and no batch at all is 'failed'. The row says it was
+       reconstructed, because the counts describe the batch as it is now,
+       which may include an analysis that somebody ran by hand afterwards.
+    2. next_collection_at in the past (or empty) on an enabled schedule.
+
+    Returns {"history_rows": n, "schedules": n} for the startup log.
+    """
+    from .models import Response
+
+    fixed = {"history_rows": 0, "schedules": 0}
+    db = None
+    try:
+        db = SessionLocal()
+        now = datetime.utcnow()
+
+        orphans = db.query(ScheduledTaskHistory).filter(
+            ScheduledTaskHistory.status == 'running',
+            ScheduledTaskHistory.started_at < now - ORPHANED_RUN_AFTER,
+        ).all()
+
+        for history in orphans:
+            batch = None
+            if history.batch_id:
+                batch = db.query(CollectionBatch).filter_by(id=history.batch_id).first()
+            if batch is None:
+                batch = db.query(CollectionBatch).filter(
+                    CollectionBatch.user_id == history.user_id,
+                    CollectionBatch.brand_id == history.brand_id,
+                    CollectionBatch.started_at >= history.started_at,
+                    CollectionBatch.started_at < history.started_at + _BATCH_MATCH_WINDOW,
+                ).order_by(CollectionBatch.started_at).first()
+
+            if batch is None:
+                history.status = 'failed'
+                history.completed_at = now
+                history.error_message = (
+                    "Run was interrupted before its outcome was recorded, and no "
+                    "collection batch was found for it. Closed at startup."
+                )
+            else:
+                responses = db.query(Response).filter_by(batch_id=batch.id)
+                collected = responses.count()
+                analyzed = responses.filter(Response.analyzed_at.isnot(None)).count()
+                history.batch_id = batch.id
+                history.collection_responses = collected
+                history.analysis_responses = analyzed
+                history.completed_at = batch.completed_at or now
+                history.status = 'success' if collected and analyzed == collected else 'partial'
+                history.error_message = (
+                    f"Run was interrupted before its outcome was recorded. Reconstructed "
+                    f"at startup from batch {batch.id}: {collected} collected, "
+                    f"{analyzed} analyzed as of {now:%Y-%m-%d %H:%M} UTC."
+                )
+            logger.warning(
+                f"History row {history.id} was stuck at 'running' since "
+                f"{history.started_at}; closed as '{history.status}'"
+            )
+            fixed["history_rows"] += 1
+
+        stale = db.query(ScheduledTask).filter(
+            ScheduledTask.is_enabled == True,
+            or_(
+                ScheduledTask.next_collection_at.is_(None),
+                ScheduledTask.next_collection_at <= now,
+            ),
+        ).all()
+
+        for schedule in stale:
+            schedule.next_collection_at = next_fixed_collection(now)
+            schedule.next_run_at = schedule.next_collection_at  # Legacy field
+            fixed["schedules"] += 1
+
+        db.commit()
+    except Exception:
+        logger.error("Startup reconcile of scheduler bookkeeping failed", exc_info=True)
+        fixed = {"history_rows": 0, "schedules": 0}
+        if db is not None:
+            db.rollback()
+    finally:
+        if db is not None:
+            db.close()
+    return fixed
+
+
 def _record_history(history_id: int, **fields) -> None:
     """
     Write `fields` onto a ScheduledTaskHistory row through a session opened
@@ -381,6 +482,10 @@ def _start_run(schedule_id: int, user_id: int, brand_id: int, label: str):
         # Update last_collection_at immediately
         schedule.last_collection_at = collection_date
         schedule.last_run_at = collection_date  # Legacy field
+        # The cron fires on fixed days, so the next run is known now. Nothing
+        # else advances this column, and the schedule pages display it.
+        schedule.next_collection_at = next_fixed_collection(collection_date)
+        schedule.next_run_at = schedule.next_collection_at  # Legacy field
         db.commit()
 
         history = ScheduledTaskHistory(
@@ -508,13 +613,13 @@ async def execute_collection_and_analysis(schedule_id: int, user_id: int, brand_
             return
 
         collected = collection_result.get("responses_collected", 0)
-        _record_history(history_id, collection_responses=collected)
+        batch_id = collection_result.get("batch_id")
+        _record_history(history_id, collection_responses=collected, batch_id=batch_id)
         logger.info(f"Collection completed for brand {brand_id}: {collected} responses")
 
         # STEP 2: Run analysis on the collected responses
         from app.services.data_pipeline import run_analysis_only
 
-        batch_id = collection_result.get("batch_id")
         if batch_id:
             analysis_result = run_analysis_only(
                 user_id=user_id,

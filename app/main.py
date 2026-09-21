@@ -214,6 +214,14 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Scheduler bookkeeping a crashed run can leave wrong: history rows stuck
+    # at 'running', and a next-collection date that is already in the past.
+    from app.scheduler import reconcile_on_startup
+    reconciled = reconcile_on_startup()
+    if any(reconciled.values()):
+        print(f"🔧 Scheduler reconcile: closed {reconciled['history_rows']} stuck history row(s), "
+              f"advanced {reconciled['schedules']} stale next-collection date(s)\n")
+
     print("\n📅 Checking scheduler configuration...")
     start_scheduler()
     print("✅ Scheduler check complete\n")

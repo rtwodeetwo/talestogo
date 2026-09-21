@@ -326,6 +326,12 @@ async def create_or_update_schedule(
         )
         db.add(schedule)
 
+    # Collections fire from one fixed cron for every brand, whatever frequency
+    # or timezone is saved here, so the date shown must come from that cron.
+    from ..scheduler import next_fixed_collection
+    schedule.next_collection_at = next_fixed_collection(datetime.utcnow())
+    schedule.next_run_at = schedule.next_collection_at  # Legacy field
+
     db.commit()
     db.refresh(schedule)
     return schedule
@@ -390,6 +396,12 @@ async def update_schedule(
         schedule.notification_email = schedule_data.notification_email
 
     schedule.updated_at = datetime.utcnow()
+
+    # Collections fire from one fixed cron for every brand, whatever frequency
+    # or timezone is saved here, so the date shown must come from that cron.
+    from ..scheduler import next_fixed_collection
+    schedule.next_collection_at = next_fixed_collection(datetime.utcnow())
+    schedule.next_run_at = schedule.next_collection_at  # Legacy field
 
     db.commit()
     db.refresh(schedule)
